@@ -6,12 +6,12 @@
 #define LLVMIRLEX_ARMBUILDER_H
 
 #include <string>
+#include "llvmirParser.h"
+
 
 namespace ARMGen{
 
-    std::string Registers[] = { "r0", "r1", "r2", "r3", "r4", "r5", "r6",  "r7", "r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc"};
-    std::string Tab = "\t";
-    std::string NewLine = "\n";
+
 
     enum condition {
         EQ, // ==
@@ -27,12 +27,21 @@ namespace ARMGen{
     public:
         ARMBuilder();
 
-        std::string  registerMapBuilder();
-        std::string typedefBuilder();
-        std::string globalIdentBuilder();
-        std::string InternalLinkageBuilder();
+        static std::string  registerMapBuilder();
+        static std::string globalIdentBuilder(llvmirParser::GlobalDefContext *context);
+        static std::string funcHeaderBuilder(llvmirParser::FuncHeaderContext *context);
+        static std::string labelBuilder(std::string context);
+        static std::string allocaBuilder(int subspace);
+        static std::string loadBuilder(llvmirParser::InstructionContext *context);
+        static std::string addBuilder(llvmirParser::InstructionContext *context);
+        static std::string subBuilder(llvmirParser::InstructionContext *context);
+
+        static std::string storeBuilder(llvmirParser::InstructionContext *context);
+
+
+        static std::string getRegister();
     };
 
-}
 
+    }
 #endif //LLVMIRLEX_ARMBUILDER_H

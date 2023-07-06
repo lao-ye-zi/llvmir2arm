@@ -18,11 +18,11 @@ std::ostream& sysy_debug();
 #define ANSI_COLOR_RESET "\033[0m"
 
 #define LOGD(message)                                                                            \
-    do {                                                                                         \
-        sysy_debug() << ANSI_COLOR_BLUE << "[D] File: " << __FILE__ << ANSI_COLOR_RESET          \
-                     << ANSI_COLOR_ORANGE << ", Line: " << __LINE__ << ANSI_COLOR_RESET << ":\t" \
-                     << message << std::endl;                                                    \
-    } while (0)
+    do {         } while (0)                                                                                \
+//        sysy_debug() << ANSI_COLOR_BLUE << "[D] File: " << __FILE__ << ANSI_COLOR_RESET          \
+//                     << ANSI_COLOR_ORANGE << ", Line: " << __LINE__ << ANSI_COLOR_RESET << ":\t" \
+//                     << message << std::endl;                                                    \
+
 #define LOGW(message)                                                                            \
     do {                                                                                         \
         sysy_debug() << ANSI_COLOR_BLUE << "[W] File: " << __FILE__ << ANSI_COLOR_RESET          \

@@ -7,10 +7,9 @@
 #include "ARMBuilder.h"
 
 std::shared_ptr<ARMGen::ARMBuilder>         g_builder;
-std::string armCode;
+std::stringstream armCode;
+std::map<std::string,int> IdentMap;
 
-std::string Tab = ARMGen::Tab;
-std::string NewLine = ARMGen::NewLine;
 
 /// topLevelEntity* EOF
 /// \param context
@@ -21,11 +20,12 @@ std::any Visitor::visitCompilationUnit(llvmirParser::CompilationUnitContext *con
     // Init builder and layer controller
     g_builder = std::make_shared<ARMGen::ARMBuilder>(ARMGen::ARMBuilder());
 
-    armCode += g_builder->registerMapBuilder();
+    armCode << g_builder->registerMapBuilder();
 
     for (auto& x: context->topLevelEntity()) {
         x->accept(this);
     }
+    std::cout<<armCode.str();
     return 0;
 }
 
@@ -55,29 +55,10 @@ std::any Visitor::visitTypeDef(llvmirParser::TypeDefContext *context) {
     return 0;
 }
 
-/// GlobalIdent '=' internalLinkage? preemption? immutable type
+/// GlobalIdent '=' internalLinkage? preemption? immutable type，不会有，弃用
 /// \param context
 /// \return
 std::any Visitor::visitGlobalDecl(llvmirParser::GlobalDeclContext *context) {
-    if(context->GlobalIdent()!= nullptr){
-        armCode += g_builder->globalIdentBuilder();
-    }else
-        LOGD("error");
-    if(context->internalLinkage()!= nullptr){
-        context->internalLinkage()->accept(this);
-    }
-    if(context->preemption()!= nullptr){
-        context->preemption()->accept(this);
-    }
-    if(context->immutable()!= nullptr){
-        armCode += context->immutable()->getText() + " ";
-    }else
-        LOGD("error");
-    if(context->type()!= nullptr){
-        context->type()->accept(this);
-    }else
-        LOGD("error");
-
     return 0;
 }
 
@@ -86,28 +67,10 @@ std::any Visitor::visitGlobalDecl(llvmirParser::GlobalDeclContext *context) {
 /// \return
 std::any Visitor::visitGlobalDef(llvmirParser::GlobalDefContext *context) {
     if(context->GlobalIdent()!= nullptr){
-        armCode += Tab + context->GlobalIdent()->getText() + " = ";
+        armCode << ARMGen::ARMBuilder::globalIdentBuilder(context);
     }else
         LOGD("error");
-    if(context->internalLinkage()!= nullptr){
-        context->internalLinkage()->accept(this);
-    }
-    if(context->preemption()!= nullptr){
-        context->preemption()->accept(this);
-    }
-    if(context->immutable()!= nullptr){
-        armCode += context->immutable()->getText() + " ";
-    }else
-        LOGD("error");
-    if(context->type()!= nullptr){
-        context->type()->accept(this);
-    }else
-        LOGD("error");
-    if (context->constant()!= nullptr){
-        context->constant()->accept(this);
-    }else
-        LOGD("error");
-
+//    std::cout<<context->type()->getText()<<": "<<context->constant()->getText()<<"\n";
     return 0;
 }
 
@@ -115,7 +78,6 @@ std::any Visitor::visitGlobalDef(llvmirParser::GlobalDefContext *context) {
 /// \param context
 /// \return
 std::any Visitor::visitInternalLinkage(llvmirParser::InternalLinkageContext *context) {
-    armCode += g_builder->InternalLinkageBuilder();
     return 0;
 }
 
@@ -124,39 +86,129 @@ std::any Visitor::visitInternalLinkage(llvmirParser::InternalLinkageContext *con
 /// \return
 std::any Visitor::visitPreemption(llvmirParser::PreemptionContext *context) {
 
-    return std::any();
+    return 0;
 }
 
+/// constant' | 'global'不用
+/// \param context
+/// \return
 std::any Visitor::visitImmutable(llvmirParser::ImmutableContext *context) {
-    return std::any();
+    return 0;
 }
 
+/// 不会在.s中出现，不用写
+/// \param context
+/// \return
 std::any Visitor::visitFuncDecl(llvmirParser::FuncDeclContext *context) {
-    return std::any();
+    return 0;
 }
 
+/// 'define' funcHeader funcBody
+/// \param context
+/// \return
 std::any Visitor::visitFuncDef(llvmirParser::FuncDefContext *context) {
-    return std::any();
+    if(context->funcHeader()!= nullptr){
+        context->funcHeader()->accept(this);
+    }
+    if(context->funcBody()!= nullptr){
+        context->funcBody()->accept(this);
+    }
+    return 0;
 }
 
+/// preemption? type GlobalIdent
+/// \param context
+/// \return
 std::any Visitor::visitFuncHeader(llvmirParser::FuncHeaderContext *context) {
-    return std::any();
+    if (context->GlobalIdent()!= nullptr){
+        armCode<<g_builder->funcHeaderBuilder(context);
+    }
+    return 0;
 }
 
+/// '{' basicBlock+ '}';
+/// \param context
+/// \return
 std::any Visitor::visitFuncBody(llvmirParser::FuncBodyContext *context) {
-    return std::any();
+    armCode<<"{\n";
+    for (auto& x:context->basicBlock()) {
+        x->accept(this);
+    }
+    armCode<<"}\n";
+    return 0;
 }
 
+/// LabelIdent? instruction* terminator;
+/// \param context
+/// \return
 std::any Visitor::visitBasicBlock(llvmirParser::BasicBlockContext *context) {
-    return std::any();
+
+    std::vector<std::unique_ptr<llvmirParser::InstructionContext>> alloca;
+    std::vector<std::unique_ptr<llvmirParser::InstructionContext>> notAlloca;
+    int subSpace = 0;
+
+    if (context->LabelIdent()!= nullptr){
+        armCode << ARMGen::ARMBuilder::labelBuilder(context->LabelIdent()->getText());
+    }
+
+    for (auto x:context->instruction()) {
+        if (x->localDefInst()!= nullptr){
+            if (x->localDefInst()->valueInstruction()->allocaInst()!= nullptr){
+                alloca.emplace_back(x);
+                continue ;
+            }
+        }
+        notAlloca.emplace_back(x);
+    }
+    for (auto& x:alloca) {
+        if (x->localDefInst()->valueInstruction()->allocaInst()->type()->arrayType()!= nullptr){
+            int intlit = std::stoi(x->localDefInst()->valueInstruction()->allocaInst()->type()->arrayType()->IntLit()->getText());
+            subSpace -= 4 * intlit;
+        }
+        else {
+            subSpace -= 4;
+        }
+        IdentMap.insert(std::make_pair(x->localDefInst()->LocalIdent()->getText(),subSpace));
+    }
+    for (auto x :IdentMap) { x.second -= subSpace; }
+
+    if(subSpace) g_builder->allocaBuilder(subSpace);
+
+    for (auto& x:notAlloca) {
+        x->accept(this);
+    }
+    if (context->terminator()!= nullptr){
+        context->terminator()->accept(this);
+    }
+    return 0;
 }
 
+///
+/// \param context
+/// \return
 std::any Visitor::visitInstruction(llvmirParser::InstructionContext *context) {
-    return std::any();
+    if(context->localDefInst()!= nullptr){
+        if (context->localDefInst()->valueInstruction()->loadInst()!= nullptr){
+            armCode << ARMGen::ARMBuilder::loadBuilder(context);
+        }
+        else if (context->localDefInst()->valueInstruction()->addInst()!= nullptr){
+            armCode << ARMGen::ARMBuilder::addBuilder(context);
+        }
+        else if (context->localDefInst()->valueInstruction()->subInst()!= nullptr){
+            armCode << ARMGen::ARMBuilder::subBuilder(context);
+        }
+    }
+    else if(context->storeInst()!= nullptr){
+        armCode << g_builder->storeBuilder(context);
+    }
+    else{
+        armCode << "";
+    }
+    return 0;
 }
 
 std::any Visitor::visitTerminator(llvmirParser::TerminatorContext *context) {
-    return std::any();
+    return 0;
 }
 
 std::any Visitor::visitLocalDefInst(llvmirParser::LocalDefInstContext *context) {
