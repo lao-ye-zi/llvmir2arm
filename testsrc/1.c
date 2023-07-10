@@ -1,8 +1,11 @@
-//test local var define
+int a;
+int func(int p){
+	p = p - 1;
+	return p;
+}
 int main(){
-    int a, b0, _c;
-    a = 1;
-    b0 = 2;
-    _c = 3;
-    return b0 + _c;
+	int b;
+	a = 10;
+	b = func(a);
+	return b;
 }

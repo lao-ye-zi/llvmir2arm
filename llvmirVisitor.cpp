@@ -7,8 +7,8 @@
 #include "ARMBuilder.h"
 
 std::shared_ptr<ARMGen::ARMBuilder>         g_builder;
-std::stringstream armCode;
-std::map<std::string,int> IdentMap;
+std::ofstream armCode("../testsrc/1.txt");
+
 
 
 /// topLevelEntity* EOF
@@ -25,7 +25,6 @@ std::any Visitor::visitCompilationUnit(llvmirParser::CompilationUnitContext *con
     for (auto& x: context->topLevelEntity()) {
         x->accept(this);
     }
-    std::cout<<armCode.str();
     return 0;
 }
 
@@ -130,11 +129,11 @@ std::any Visitor::visitFuncHeader(llvmirParser::FuncHeaderContext *context) {
 /// \param context
 /// \return
 std::any Visitor::visitFuncBody(llvmirParser::FuncBodyContext *context) {
-    armCode<<"{\n";
+    armCode << g_builder->fnStart();
     for (auto& x:context->basicBlock()) {
         x->accept(this);
     }
-    armCode<<"}\n";
+    armCode << g_builder->fnEnd();
     return 0;
 }
 
@@ -143,9 +142,8 @@ std::any Visitor::visitFuncBody(llvmirParser::FuncBodyContext *context) {
 /// \return
 std::any Visitor::visitBasicBlock(llvmirParser::BasicBlockContext *context) {
 
-    std::vector<std::unique_ptr<llvmirParser::InstructionContext>> alloca;
-    std::vector<std::unique_ptr<llvmirParser::InstructionContext>> notAlloca;
-    int subSpace = 0;
+    std::vector<llvmirParser::InstructionContext *> alloca;
+    std::vector<llvmirParser::InstructionContext*> notAlloca;
 
     if (context->LabelIdent()!= nullptr){
         armCode << ARMGen::ARMBuilder::labelBuilder(context->LabelIdent()->getText());
@@ -161,18 +159,9 @@ std::any Visitor::visitBasicBlock(llvmirParser::BasicBlockContext *context) {
         notAlloca.emplace_back(x);
     }
     for (auto& x:alloca) {
-        if (x->localDefInst()->valueInstruction()->allocaInst()->type()->arrayType()!= nullptr){
-            int intlit = std::stoi(x->localDefInst()->valueInstruction()->allocaInst()->type()->arrayType()->IntLit()->getText());
-            subSpace -= 4 * intlit;
-        }
-        else {
-            subSpace -= 4;
-        }
-        IdentMap.insert(std::make_pair(x->localDefInst()->LocalIdent()->getText(),subSpace));
+        x->accept(this);
     }
-    for (auto x :IdentMap) { x.second -= subSpace; }
-
-    if(subSpace) g_builder->allocaBuilder(subSpace);
+    armCode << g_builder->allocaAllBuilder();
 
     for (auto& x:notAlloca) {
         x->accept(this);
@@ -188,34 +177,51 @@ std::any Visitor::visitBasicBlock(llvmirParser::BasicBlockContext *context) {
 /// \return
 std::any Visitor::visitInstruction(llvmirParser::InstructionContext *context) {
     if(context->localDefInst()!= nullptr){
-        if (context->localDefInst()->valueInstruction()->loadInst()!= nullptr){
-            armCode << ARMGen::ARMBuilder::loadBuilder(context);
-        }
-        else if (context->localDefInst()->valueInstruction()->addInst()!= nullptr){
-            armCode << ARMGen::ARMBuilder::addBuilder(context);
-        }
-        else if (context->localDefInst()->valueInstruction()->subInst()!= nullptr){
-            armCode << ARMGen::ARMBuilder::subBuilder(context);
-        }
+        context->localDefInst()->accept(this);
     }
-    else if(context->storeInst()!= nullptr){
-        armCode << g_builder->storeBuilder(context);
+    if(context->storeInst()!= nullptr){
+        context->storeInst()->accept(this);
     }
-    else{
-        armCode << "";
+    if(context->valueInstruction()!= nullptr ){
+        context->valueInstruction()->accept(this);
     }
     return 0;
 }
 
 std::any Visitor::visitTerminator(llvmirParser::TerminatorContext *context) {
+    if (context->retTerm()!= nullptr){
+        context->retTerm()->accept(this);
+    }
+    if (context->brTerm()!= nullptr){
+        context->brTerm()->accept(this);
+    }
+    if (context->condBrTerm()!= nullptr){
+        context->condBrTerm()->accept(this);
+    }
     return 0;
 }
 
 std::any Visitor::visitLocalDefInst(llvmirParser::LocalDefInstContext *context) {
-    return std::any();
+    if(context->valueInstruction()->allocaInst()!= nullptr){
+        g_builder->allocaBuilder(context);
+    }
+    else if (context->valueInstruction()->loadInst()!= nullptr){
+        armCode << g_builder->loadBuilder(context);
+    }
+    else if (context->valueInstruction()->addInst()!= nullptr){
+        armCode << g_builder->addBuilder(context);
+    }
+    else if (context->valueInstruction()->subInst()){
+        armCode << g_builder->subBuilder(context);
+    }
+    else if (context->valueInstruction()->getElementPtrInst()!= nullptr){
+        armCode << g_builder->getBuilder(context);
+    }
+    return 0;
 }
 
 std::any Visitor::visitValueInstruction(llvmirParser::ValueInstructionContext *context) {
+
     return std::any();
 }
 
@@ -272,6 +278,7 @@ std::any Visitor::visitFRemInst(llvmirParser::FRemInstContext *context) {
 }
 
 std::any Visitor::visitStoreInst(llvmirParser::StoreInstContext *context) {
+    armCode << g_builder->storeBuilder(context);
     return std::any();
 }
 
@@ -344,11 +351,13 @@ std::any Visitor::visitCallInst(llvmirParser::CallInstContext *context) {
 }
 
 std::any Visitor::visitRetTerm(llvmirParser::RetTermContext *context) {
-    return std::any();
+    armCode << g_builder->retBuilder(context);
+    return 0;
 }
 
 std::any Visitor::visitBrTerm(llvmirParser::BrTermContext *context) {
-    return std::any();
+    armCode << g_builder->brBuilder(context);
+    return 0;
 }
 
 std::any Visitor::visitCondBrTerm(llvmirParser::CondBrTermContext *context) {
