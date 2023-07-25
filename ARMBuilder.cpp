@@ -1,87 +1,114 @@
 #include <iomanip>
+#include <regex>
+#include <utility>
+#include <vector>
 #include "ARMBuilder.h"
 
-//std::string Registers[] = { "r0", "r1", "r2", "r3", "r4", "r5", "r6",  "r7", "r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc"};
-std::string Tab = "\t";
-std::string NewLine = "\n";
-std::map<std::string,std::string> Id_Registers;
-std::map<std::string,std::string> GlobalId_Label;
-std::map<std::string,int>        LocalId_Offset;
-int GlobalIdNum=0;
-int subSpace = 0;
-int retSpace = 0;
 
-ARMGen::ARMBuilder::ARMBuilder() = default;
 
-std::string ARMGen::ARMBuilder::registerMapBuilder()
+std::set<string> Registers{"r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"};   // 寄存器表
+std::set<string>                   rg_push;
+std::map<std::string, std::string> Id_Registers;   // 记录临时变量和寄存器的对应关系
+std::map<std::string, std::string> GlobalId_Label;   // 记录全局变量和分配的标签的关系
+std::map<std::string, std::string> TimeToRelease;   // 第一个元素在第二个元素出现时释放
+std::map<std::string, std::vector<std::string>> Greater;   // 第一个元素出现时 释放后面的元素
+std::map<std::string, int>      LocalId_Offset;   // 记录本地变量在栈帧中的偏移量
+std::map<string, string>        bool_flag;
+std::vector<std::string>        local_ident;      // 记录临时变量的出现顺序
+std::unordered_set<std::string> local_unique;
+int                             _it = 0;
+string                          last_id;   // 上一个加进来的临时变量的名字
+
+int GlobalIdNum = 0;                       // 全局变量的数量
+int subSpace    = 0;                       // 需要为栈帧分配的空间
+int retSpace    = 0;
+
+
+void ARMGen::ARMBuilder::globalIdentBuilder(llvmirParser::GlobalDefContext* context)
 {
     /*
-     * 返回.s最开头的一些注册表，比如.text, .file等
-     */
-    std::string armCode;
-    armCode += Tab + ".text" + NewLine;
-    return armCode;
-}
-
-std::string ARMGen::ARMBuilder::globalIdentBuilder(llvmirParser::GlobalDefContext* context)
-{
-        /*
      * 返回一个变量的构造
-         */
-    std::stringstream armCode;
+     */
     std::string IdName = context->GlobalIdent()->getText().erase(0, 1);
-    armCode << Tab << ".type" << Tab << IdName << ",%object" << NewLine;
-    armCode << Tab << ".globl" << Tab << IdName << NewLine;
-    armCode << IdName << ":" << NewLine;
-    //填充内容
+    // 填充内容
     auto constant = context->constant();
-    if (constant->intConst()!= nullptr){
-        armCode << intValue(constant->intConst());
-        armCode << Tab << ".size" << Tab << IdName << ", 4" << NewLine;
-    }
-    else if (constant->floatConst()!= nullptr){
-        armCode << floatValue(constant->floatConst());
-        armCode << Tab << ".size" << Tab << IdName << ", 4" << NewLine;
-    }
-    else if (constant->arrayConst()!= nullptr){
-        armCode << arrayValue(constant->arrayConst());
-    }
-    else if (constant->zeroInitializerConst()!= nullptr){
-        if (context->type()->arrayType()!= nullptr){
-            armCode << zeroValue(context->type()->arrayType());
+
+    string section;
+    if (constant->intConst() != nullptr) {
+        string val = intValue(constant->getText());
+        if (context->immutable()->getText() == "global") {
+            if (val == "0")
+                section = ".bss";
+            else
+                section = ".data";
+        } else
+            section = ".section\t.rodata,\"a\",%progbits";
+
+        auto*                      long_id = new Long(IdName, val, section);
+        std::shared_ptr<TopEntity> long_v  = std::shared_ptr<TopEntity>(long_id);
+        Tops.push_back(long_v);
+    } else if (constant->floatConst() != nullptr) {
+        string val = floatValue(constant->getText());
+        if (val == "0x0")
+            section = ".bss";
+        else
+            section = ".data";
+        val                                = floatValue(val);
+        auto*                      long_id = new Long(IdName, val, section);
+        std::shared_ptr<TopEntity> long_v  = std::shared_ptr<TopEntity>(long_id);
+        Tops.push_back(long_v);
+        //        armCode << Tab << ".size" << Tab << IdName << ", 4" << NewLine;
+    } else if (constant->arrayConst()!= nullptr) {
+        std::vector<string> vals;
+        section                             = ".data";
+        vals                                = arrayValue(constant->arrayConst());
+        auto*                      array_id = new Array(IdName, vals, section);
+        std::shared_ptr<TopEntity> array_v  = std::shared_ptr<TopEntity>(array_id);
+        Tops.push_back(array_v);
+    } else if (constant->zeroInitializerConst()!= nullptr) {
+        std::vector<string> vals;
+        section = ".bss";
+        if (context->type()->arrayType() != nullptr) {
+            int  space = LONG_SIZE;
+            auto type  = context->type()->arrayType();
+            while (type->type()->arrayType() != nullptr) {
+                space *= std::stoi(type->IntLit()->getText());
+                type = type->type()->arrayType();
+            }
+            space *= std::stoi(type->IntLit()->getText());
+            vals.emplace_back("zero\t" + std::to_string(space));
+            auto array_v = std::make_shared<Array>(IdName, vals, section);
+            Tops.push_back(array_v);
+        } else {
+            string val   = "0";
+            auto   long_ = std::make_shared<Long>(IdName, val, section);
+            Tops.push_back(long_);
         }
-        else {
-            armCode << Tab << ".long" << Tab << "0" << NewLine;
-            armCode << Tab << ".size" << Tab << IdName << ", 4" << NewLine;
-        }
     }
-    armCode << NewLine;
-    return armCode.str();
 }
 
-std::string ARMGen::ARMBuilder::funcHeaderBuilder(llvmirParser::FuncHeaderContext* context)
+void ARMGen::ARMBuilder::funcHeaderBuilder(llvmirParser::FuncHeaderContext* context)
 {
     std::stringstream armCode;
-    std::string FuncName = context->GlobalIdent()->getText();
-    armCode << Tab << ".globl" << Tab << FuncName << NewLine;
-    armCode << Tab << ".type" << Tab << FuncName << ",%function" << NewLine;
-    armCode << Tab << ".code\t32" << NewLine;
-    armCode << FuncName << ":" << NewLine;
-    //根据params操作一下寄存器
-    armCode << NewLine;
-    return armCode.str();
+    std::string       FuncName = context->GlobalIdent()->getText().erase(0, 1);
+    ARMGen::Function  Function(FuncName);
+    auto              function = std::make_shared<ARMGen::Function>(FuncName);
+    Tops.push_back(function);
 }
-std::string ARMGen::ARMBuilder::labelBuilder(std::string context)
+void ARMGen::ARMBuilder::labelBuilder(const std::string& context)
 {
-    return "." + context + NewLine;
+    auto func  = std::dynamic_pointer_cast<ARMGen::Function>(Tops.back());
+    auto label = std::make_shared<Label>(func->getname() + context);
+    func->addInst(label);
 }
 
-void ARMGen::ARMBuilder::allocaBuilder(llvmirParser::LocalDefInstContext *context)
+void ARMGen::ARMBuilder::allocaBuilder(
+    llvmirParser::TypeContext* type, const std::string& LocalIdent
+)
 {
-    auto LocalId = context->LocalIdent();
-    auto type    = context->valueInstruction()->allocaInst()->type();
+
     if (type->arrayType() != nullptr) {
-        int  space = 4;
+        int  space = LONG_SIZE;
         auto array = type->arrayType();
         while (array->type()->arrayType() != nullptr) {
             space *= std::stoi(array->IntLit()->getText());
@@ -90,236 +117,643 @@ void ARMGen::ARMBuilder::allocaBuilder(llvmirParser::LocalDefInstContext *contex
         space *= std::stoi(array->IntLit()->getText());
         subSpace += space;
     } else
-        subSpace += 4;
-    LocalId_Offset.insert(std::make_pair(LocalId->getText(), subSpace));
+        subSpace += LONG_SIZE;
+    LocalId_Offset.insert(std::make_pair(LocalIdent, subSpace));
 }
 
-std::string ARMGen::ARMBuilder::allocaAllBuilder()
+void ARMGen::ARMBuilder::allocaAllBuilder()
 {
-    std::stringstream armCode;
-    if (subSpace){
-        for(auto& x: LocalId_Offset){
-            x.second = subSpace - x.second;
+    auto func = std::dynamic_pointer_cast<ARMGen::Function>(Tops.back());
+    if (!rg_push.empty()) {
+        std::stringstream ss;
+        for (auto it = rg_push.begin(); it != rg_push.end(); it++) {
+            if (it != rg_push.begin()) { ss << ", "; }
+            ss << *it;
         }
-        armCode << Tab << "sub" << " sp, sp ,#" << std::to_string(subSpace) << NewLine;
+        auto push_ = std::make_shared<PushSen>(ss.str());
+        func->addInst(push_);
+    }
+    if (subSpace) {
+        for (auto& x : LocalId_Offset) { x.second = subSpace - x.second; }
+        auto sub = std::make_shared<SubSen>("sp", "sp", HASHTAG + std::to_string(subSpace));
+        func->addInst(sub);
+
         retSpace = subSpace;
         subSpace = 0;
     }
-    return armCode.str();
 }
 
 
-std::string ARMGen::ARMBuilder::loadBuilder(llvmirParser::LocalDefInstContext *context)
+void ARMGen::ARMBuilder::loadBuilder(std::string Rd, std::string Rn)
 {
-    auto Rn = context->valueInstruction()->loadInst()->typeValue()->value();
-    auto Rd = context->LocalIdent();
-    std::stringstream armCode;
-    //记录寄存器和该变量的键值对，以后再次用到该变量时可以直接用改寄存器
-    Id_Registers.insert(std::make_pair(Rd->getText(), getRegister()));
-
-    //若需要用到全局变量
-    if (Rn->GlobalIdent()!= nullptr){
-        //先把变量名取出来
-        std::string IdName = Rn->getText().erase(0, 1);
-        //先看看该函数的GlobalId有没有存储相应的 全局变量 Label 对
-        auto finder = GlobalId_Label.find(Rn->getText());
-        //没有就添加进去
-        if (finder == GlobalId_Label.end()){
+    auto func = std::dynamic_pointer_cast<ARMGen::Function>(Tops.back());
+    // 若需要用到全局变量
+    if (Rn[0] == '@') {
+        // 先看看该函数的GlobalId有没有存储相应的 全局变量 Label 对
+        auto finder = GlobalId_Label.find(Rn);
+        // 没有就添加进去
+        if (finder == GlobalId_Label.end()) {
             GlobalIdNum += 1;
-            Id_Registers.insert(std::make_pair(IdName, getRegister()));
-            GlobalId_Label.insert(std::make_pair(IdName, ".ZYNB"+std::to_string(GlobalIdNum)));
-            armCode << Tab << "ldr" << " " << Id_Registers[IdName] << ", " << GlobalId_Label[IdName] << NewLine;
+            GlobalId_Label.insert(
+                std::make_pair(Rn, ".ZYNB" + func->getname() + std::to_string(GlobalIdNum))
+            );
+            auto ldr_1 = std::make_shared<LdrSen>(getRegister(Rn), GlobalId_Label[Rn]);
+            func->addInst(ldr_1);
         }
-
-        armCode << Tab << "ldr" << " " << Id_Registers[IdName] << ", [" << Id_Registers[IdName] << "]" << NewLine;
+        auto ldr_3 = std::make_shared<LdrSen>(getRegister(Rd), "[" + getRegister(Rn) + "]");
+        func->addInst(ldr_3);
+        return;
     }
-    else {
-        armCode << Tab << "ldr" << " " << getRegister() << ", " << makeSp(LocalId_Offset[Rn->getText()]) << NewLine;
+    if (LocalId_Offset.find(Rn) != LocalId_Offset.end()) {
+        auto ldr_2 =
+            std::make_shared<LdrSen>(getRegister(Rd), "[" + makeSp(LocalId_Offset[Rn]) + "]");
+        func->addInst(ldr_2);
+    } else {
+        auto ldr_2 = std::make_shared<LdrSen>(getRegister(Rd), "[" + getRegister(Rn) + "]");
+        func->addInst(ldr_2);
     }
-    return armCode.str();
 }
-std::string ARMGen::ARMBuilder::addBuilder(llvmirParser::LocalDefInstContext *context)
+void ARMGen::ARMBuilder::addBuilder(const std::string& Rd, std::string Rn1, std::string Rn2)
 {
-    auto Rn1 = context->valueInstruction()->addInst()->typeValue()->value();
-    auto Rn2 = context->valueInstruction()->addInst()->value();
-    std::stringstream armCode;
-    armCode << Tab << "add" << " " << getRegister() << ", " << Id_Registers[Rn1->getText()] << ", " << Id_Registers[Rn2->getText()] <<NewLine;
-    return armCode.str();
+    auto   func       = std::dynamic_pointer_cast<ARMGen::Function>(Tops.back());
+    bool   isPositive = true;
+    string _rd, _rn1, _rn2;
+    try {
+        int num = std::stoi(Rn2);
+        if (num == 0) return;
+        if (num < 0) {
+            num        = -num;
+            isPositive = false;
+        }
+        _rn2 = HASHTAG + std::to_string(num);
+    } catch (const std::exception& e) {
+        _rn2 = getRegister(Rn2);
+    }
+    try {
+        int num = std::stoi(Rn1);
+        if (num == 0) return;
+        if (num < 0) {
+            num        = -num;
+            isPositive = false;
+        }
+        _rn1 = _rn2;
+        _rn2 = HASHTAG + std::to_string(num);
+    } catch (const std::exception& e) {
+        _rn1 = getRegister(Rn1);
+    }
+    _rd = getRegister(Rd);
+    if (isPositive) {
+        auto add_ = std::make_shared<AddSen>(_rd, _rn1, _rn2);
+        func->addInst(add_);
+    } else {
+        auto sub_ = std::make_shared<SubSen>(_rd, _rn1, _rn2);
+        func->addInst(sub_);
+    }
 }
-std::string ARMGen::ARMBuilder::subBuilder(llvmirParser::LocalDefInstContext *context)
-{
-    auto Rn1 = context->valueInstruction()->addInst()->typeValue()->value();
-    auto Rn2 = context->valueInstruction()->addInst()->value();
-    std::stringstream armCode;
-    armCode << Tab << "sub" << " " << getRegister() << ", " << Id_Registers[Rn1->getText()] << ", " << Id_Registers[Rn2->getText()] <<NewLine;
-    return armCode.str();
-}
-std::string ARMGen::ARMBuilder::storeBuilder(llvmirParser::StoreInstContext *context)
-{
-    auto Rn = context->typeValue()[0]->value();
-    auto Rd = context->typeValue()[1]->value();
-    std::stringstream armCode;
 
-    //目标寄存器是否是全局变量
-    if (Rd->GlobalIdent()!= nullptr){
-        std::string IdName = Rd->getText().erase(0, 1);
-        //是的话要先看看该函数是否已经存过该全局变量
-        auto finder = GlobalId_Label.find(Rd->getText());
-        if (finder == GlobalId_Label.end()){
+void ARMGen::ARMBuilder::faddBuilder(const std::string& Rd, std::string Rn1, std::string Rn2)
+{
+    std::string r0, s0, s2;
+    s2         = getRegister(std::move(Rn2));
+    s0         = getRegister(std::move(Rn1));
+    r0         = getRegister(Rd);
+    auto vadd_ = std::make_shared<VaddSen>(r0, s0, s2);
+    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(vadd_);
+}
+
+void ARMGen::ARMBuilder::subBuilder(const std::string& Rd, std::string Rn1, std::string Rn2)
+{
+    auto   func       = std::dynamic_pointer_cast<ARMGen::Function>(Tops.back());
+    bool   isPositive = true;
+    string _rd, _rn1, _rn2;
+    try {
+        int num = std::stoi(Rn2);
+        if (num < 0) {
+            num        = -num;
+            isPositive = false;
+        }
+        _rn2 = HASHTAG + std::to_string(num);
+    } catch (const std::exception& e) {
+        _rn2 = getRegister(Rn2);
+    }
+    try {
+        int num = std::stoi(Rn1);
+        if (num < 0) {
+            num        = -num;
+            isPositive = false;
+        }
+        _rn1 = _rn2;
+        _rn2 = HASHTAG + std::to_string(num);
+    } catch (const std::exception& e) {
+        _rn1 = getRegister(Rn1);
+    }
+    _rd = getRegister(Rd);
+    if (isPositive) {
+        auto sub_ = std::make_shared<SubSen>(_rd, _rn1, _rn2);
+        func->addInst(sub_);
+    } else {
+        auto rsb_ = std::make_shared<RsbSen>(_rd, _rn1, _rn2);
+        func->addInst(rsb_);
+    }
+}
+
+void ARMGen::ARMBuilder::fsubBuilder(const std::string& Rd, std::string Rn1, std::string Rn2)
+{
+    std::string r0, s0, s2;
+    s2         = getRegister(std::move(Rn2));
+    s0         = getRegister(std::move(Rn1));
+    r0         = getRegister(Rd);
+    auto vsub_ = std::make_shared<VsubSen>(r0, s0, s2);
+    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(vsub_);
+}
+
+void ARMGen::ARMBuilder::mulBuilder(const std::string& Rd, std::string Rn1, std::string Rn2)
+{
+    std::string r0, r1, r2;
+    r2        = getRegister(std::move(Rn2));
+    r1        = getRegister(std::move(Rn1));
+    r0        = getRegister(Rd);
+    auto mul_ = std::make_shared<MulSen>(r0, r1, r2);
+    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(mul_);
+}
+
+void ARMGen::ARMBuilder::fmulBuilder(const std::string& Rd, std::string Rn1, std::string Rn2)
+{
+    std::string r0, s0, s2;
+    s2         = getRegister(std::move(Rn2));
+    s0         = getRegister(std::move(Rn1));
+    r0         = getRegister(Rd);
+    auto vmul_ = std::make_shared<VmulSen>(r0, s0, s2);
+    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(vmul_);
+}
+
+void ARMGen::ARMBuilder::sdivBuilder(const std::string& Rd, std::string Rn1, std::string Rn2)
+{
+    std::string r0, r1, r2;
+    r2 = getRegister(std::move(Rn2));
+    r1 = getRegister(std::move(Rn1));
+    // 需要将Rn1的内容存到r0，Rn2的内容存到r1，Rd返回r0
+
+    auto bl_ = std::make_shared<BlSen>("__divsi3");
+    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(bl_);
+}
+
+void ARMGen::ARMBuilder::fdivBuilder(const std::string& Rd, std::string Rn1, std::string Rn2)
+{
+    std::string r0, s0, s2;
+    s2         = getRegister(std::move(Rn2));
+    s0         = getRegister(std::move(Rn1));
+    r0         = getRegister(Rd);
+    auto vdiv_ = std::make_shared<VdivSen>(r0, s0, s2);
+    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(vdiv_);
+}
+
+void ARMGen::ARMBuilder::sremBuilder(const std::string& Rd, std::string Rn1, std::string Rn2)
+{
+    std::string r0, r1, r2;
+    r2 = getRegister(std::move(Rn2));
+    r1 = getRegister(std::move(Rn1));
+    // 需要将Rn1的内容存到r0，Rn2的内容存到r1，Rd返回r0
+
+    auto bl_ = std::make_shared<BlSen>("__modsi3");
+    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(bl_);
+}
+
+void ARMGen::ARMBuilder::icmpMapBuilder(const string& bool_, const string& flag_)
+{
+    bool_flag.insert(std::make_pair(bool_, flag_));
+}
+
+void ARMGen::ARMBuilder::icmpBuilder(string& rn1, string& rn2)
+{
+    auto   func       = std::dynamic_pointer_cast<ARMGen::Function>(Tops.back());
+    bool   isPositive = true;
+    string _rn1, _rn2;
+    try {
+        int num = std::stoi(rn2);
+        if (num < 0) {
+            num        = -num;
+            isPositive = false;
+        }
+        _rn2 = HASHTAG + std::to_string(num);
+    } catch (const std::exception& e) {
+        _rn2 = getRegister(rn2);
+    }
+    try {
+        int num = std::stoi(rn1);
+        if (num < 0) {
+            num        = -num;
+            isPositive = false;
+        }
+        _rn1 = _rn2;
+        _rn2 = HASHTAG + std::to_string(num);
+    } catch (const std::exception& e) {
+        _rn1 = getRegister(rn1);
+    }
+    if (isPositive) {
+        auto cmp_ = std::make_shared<CmpSen>(_rn1, _rn2);
+        func->addInst(cmp_);
+    } else {
+        auto cmn_ = std::make_shared<CmnSen>(_rn1, _rn2);
+        func->addInst(cmn_);
+    }
+}
+
+void ARMGen::ARMBuilder::storeBuilder(std::string Rn, std::string Rd)
+{
+    auto func = std::dynamic_pointer_cast<ARMGen::Function>(Tops.back());
+    // 目标寄存器是否是全局变量
+    if (Rd[0] == '@') {
+        // 是的话要先看看该函数是否已经存过该全局变量
+        auto finder = GlobalId_Label.find(Rd);
+        if (finder == GlobalId_Label.end()) {
             GlobalIdNum += 1;
-            Id_Registers.insert(std::make_pair(IdName,getRegister()));
-            GlobalId_Label.insert(std::make_pair(IdName, ".ZYNB"+std::to_string(GlobalIdNum)));
+            GlobalId_Label.insert(
+                std::make_pair(Rd, ".ZYNB" + func->getname() + std::to_string(GlobalIdNum))
+            );
+            // 加一句把标签加进来
+            auto ldr_1 = std::make_shared<LdrSen>(getRegister(Rd), GlobalId_Label[Rd]);
+            func->addInst(ldr_1);
         }
-        armCode << Tab << "ldr" << " " << Id_Registers[IdName] << ", " << GlobalId_Label[Rd->getText().erase(0,1)] << NewLine;
     }
-    if (Rn->constant()!= nullptr) {
-        armCode << Tab << "mov" << " " << getRegister() << ", #" << Rn->getText() << NewLine;
-    }
-    if (Rd->GlobalIdent()!= nullptr){
-        armCode << Tab << "str" << " " << getRegister() << ", [" << Id_Registers[Rd->getText().erase(0,1)] << "]" << NewLine;
-        armCode << Tab << "str" << " " << getRegister() << ", [" << Id_Registers[Rd->getText().erase(0,1)] << "]" << NewLine;
-    }
-    else armCode << Tab << "str" << " " << getRegister() << ", " << makeSp(LocalId_Offset[Rd->getText()]) << NewLine;
-    return armCode.str();
+    auto str_2 = std::make_shared<StrSen>(getRegister(Rd), getRegister(Rn));
+    func->addInst(str_2);
 }
 
 
 
-std::string ARMGen::ARMBuilder::getRegister()
+std::string ARMGen::ARMBuilder::getRegister(const std::string Id)
 {
-    return "r0";
+    if (LocalId_Offset.find(Id) != LocalId_Offset.end()) {
+        if (LocalId_Offset[Id]) { return "sp, #" + std::to_string(LocalId_Offset[Id]); }
+        return "sp";
+    }
+    if (Id[0] != '@' && Id[0] != '%') {
+        if (local_unique.find(Id) == local_unique.end()) {
+            int num_ = std::stoi(Id);
+            if (num_ >= 0) {
+                local_unique.insert(Id);
+                auto mov_ = std::make_shared<MovSen>(Id_Registers[Id], HASHTAG + Id);
+                std::dynamic_pointer_cast<Function>(Tops.back())->addInst(mov_);
+            } else {
+                local_unique.insert(Id);
+                string id_  = std::to_string(-1 - num_);
+                auto   mvn_ = std::make_shared<MvnSen>(Id_Registers[Id], HASHTAG + id_);
+                std::dynamic_pointer_cast<Function>(Tops.back())->addInst(mvn_);
+            }
+        }
+    }
+    return Id_Registers[Id];
 }
 
 std::string ARMGen::ARMBuilder::makeSp(int offset)
 {
-    if (offset) return "[sp, #" + std::to_string(offset) + "]";
-    return "[sp]";
+    if (offset) return "sp, #" + std::to_string(offset);
+    return "sp";
 }
 
-std::string ARMGen::ARMBuilder::arrayValue(llvmirParser::ArrayConstContext *context){
-    std::stringstream armCode;
-    for (auto &x: context->typeConst()) {
-        if (x->constant()->arrayConst()!= nullptr){
-            armCode << arrayValue(x->constant()->arrayConst());
-        }
-        else if (x->constant()->intConst()!= nullptr){
-            armCode << intValue(x->constant()->intConst());
-        }
-        else if (x->constant()->floatConst()!= nullptr){
-            armCode << floatValue(x->constant()->floatConst());
+std::vector<string> ARMGen::ARMBuilder::arrayValue(llvmirParser::ArrayConstContext* context)
+{
+    std::vector<string> vals;
+    for (auto& x : context->typeConst()) {
+        if (x->constant()->arrayConst() != nullptr) {
+            for (auto& y : arrayValue(x->constant()->arrayConst())) { vals.push_back(y); }
+        } else if (x->constant()->intConst() != nullptr) {
+            vals.push_back(intValue(x->constant()->getText()));
+        } else if (x->constant()->floatConst() != nullptr) {
+            vals.push_back(floatValue(x->constant()->getText()));
         }
         else if (x->constant()->zeroInitializerConst()!= nullptr){
-            armCode << zeroValue(x->concreteType()->arrayType());
+            vals.push_back(zeroValue(x->concreteType()->arrayType()));
         }
     }
-    return armCode.str();
+    return vals;
 }
 
-std::string ARMGen::ARMBuilder::fnStart()
+void ARMGen::ARMBuilder::fnEnd()
 {
-    return Tab + ".fnstart" + NewLine;
-}
-std::string ARMGen::ARMBuilder::fnEnd()
-{
-    std::stringstream armCode;
-    if (GlobalIdNum){
+    auto func_ = std::dynamic_pointer_cast<Function>(Tops.back());
+    if (GlobalIdNum) {
         GlobalIdNum = 0;
-        for (auto x: GlobalId_Label) {
+        for (auto x : GlobalId_Label) {
             std::string IdName = x.first;
-            IdName.erase(0, 1);
-            armCode << x.second <<NewLine;
-            armCode << Tab << ".long" << " " << IdName <<NewLine;
+            auto        label_ = std::make_shared<Label>(x.second.erase(0, 1) + ":");
+            func_->addInst(label_);
+            auto global_id = std::make_shared<GlobalId>(x.first);
+            func_->addInst(global_id);
         }
         GlobalId_Label.clear();
     }
-    armCode << ".Lfunc_end:" << NewLine;
-    armCode << Tab << ".size" << Tab << NewLine;
-    armCode << Tab << ".fnend" << NewLine;
-    return armCode.str();
+    Greater.clear();
+    Id_Registers.clear();
+    LocalId_Offset.clear();
+    local_ident.clear();
+    local_unique.clear();
+    retSpace = 0;
 }
-std::string ARMGen::ARMBuilder::retBuilder(llvmirParser::RetTermContext *context)
+void ARMGen::ARMBuilder::retBuilder(llvmirParser::RetTermContext* context)
 {
-    std::stringstream armCode;
-    if (retSpace){
-        armCode << Tab << "add" << " sp, sp ,#" << std::to_string(subSpace) << NewLine;
-        retSpace = 0;
+    auto func_ptr = std::dynamic_pointer_cast<ARMGen::Function>(Tops.back());
+    // 先看是否返回的是一个一个一个常数啊
+    if (context->value()->constant() != nullptr) {
+        // 是的话还要将其移进r0
+        auto mov_1 = std::make_shared<MovSen>("r0", HASHTAG + context->value()->getText());
+        func_ptr->addInst(mov_1);
     }
-    armCode << Tab << "mov pc, lr" << NewLine;
-    return armCode.str();
+    if (retSpace) {
+        // 若是之前有改变过sp，则要回退
+        auto add_ = std::make_shared<AddSen>("sp", "sp", HASHTAG + std::to_string(retSpace));
+        func_ptr->addInst(add_);
+    }
+    if (!rg_push.empty()) {
+        std::stringstream ss;
+        for (auto it = rg_push.begin(); it != rg_push.end(); it++) {
+            if (it != rg_push.begin()) { ss << ", "; }
+            ss << *it;
+        }
+        auto pop_ = std::make_shared<PopSen>(ss.str());
+        func_ptr->addInst(pop_);
+        rg_push.clear();
+    }
+    // 最后将lr移回pc
+    auto mov_2 = std::make_shared<MovSen>("pc", "lr");
+    func_ptr->addInst(mov_2);
+    // 将最后一个临时变量释放掉
+    removeRegister(context->value()->getText());
+    // 清除所有相关的map
 }
-std::string ARMGen::ARMBuilder::brBuilder(llvmirParser::BrTermContext *context)
+void ARMGen::ARMBuilder::brBuilder(llvmirParser::BrTermContext* context)
+{
+    auto func  = std::dynamic_pointer_cast<ARMGen::Function>(Tops.back());
+    auto label = context->label()->LocalIdent()->getText().erase(0, 1);
+    auto b_    = std::make_shared<BSen>(func->getname() + label);
+    func->addInst(b_);
+}
+
+void ARMGen::ARMBuilder::condBrBuilder(string bool_, string label1, string label2)
+{
+    auto func = std::dynamic_pointer_cast<Function>(Tops.back());
+    if (bool_flag[bool_] == "sgt") {
+        auto bgt_ = std::make_shared<BgtSen>(func->getname() + label1.erase(0, 1));
+        func->addInst(bgt_);
+    }
+    if (bool_flag[bool_] == "sge") {
+        auto bge_ = std::make_shared<BgeSen>(func->getname() + label1.erase(0, 1));
+        func->addInst(bge_);
+    }
+    if (bool_flag[bool_] == "slt") {
+        auto blt_ = std::make_shared<BltSen>(func->getname() + label1.erase(0, 1));
+        func->addInst(blt_);
+    }
+    if (bool_flag[bool_] == "sle") {
+        auto ble_ = std::make_shared<BleSen>(func->getname() + label1.erase(0, 1));
+        func->addInst(ble_);
+    }
+    if (bool_flag[bool_] == "eq") {
+        auto beq_ = std::make_shared<BeqSen>(func->getname() + label1.erase(0, 1));
+        func->addInst(beq_);
+    }
+    if (bool_flag[bool_] == "ne") {
+        auto bne_ = std::make_shared<BneSen>(func->getname() + label1.erase(0, 1));
+        func->addInst(bne_);
+    }
+    auto b_ = std::make_shared<BSen>(func->getname() + label2.erase(0, 1));
+    func->addInst(b_);
+}
+
+std::string ARMGen::ARMBuilder::intValue(const string& context)
 {
     std::stringstream armCode;
-    auto label = context->label()->LocalIdent()->getText().erase(0,1);
-    armCode << Tab << "b" << " ." << label << NewLine;
+    uint32_t          val = std::stoi(context);
+    armCode << val;
     return armCode.str();
 }
-std::string ARMGen::ARMBuilder::intValue(llvmirParser::IntConstContext* context)
-{
-    std::stringstream armCode;
-    armCode << Tab << ".long" << Tab << context->getText() << NewLine;
-    return armCode.str();
-}
-std::string ARMGen::ARMBuilder::floatValue(llvmirParser::FloatConstContext* context)
+std::string ARMGen::ARMBuilder::floatValue(const string& context)
 {
     std::stringstream armCode;
     std::stringstream hex;
-    hex << std::hex << context->getText();
-    uint64_t float64 ;
+    hex << std::hex << context;
+    uint64_t float64;
     hex >> float64;
-    auto float32 = static_cast<float>(*reinterpret_cast<double*>(&float64));
-    auto *float10 = reinterpret_cast<uint32_t*>(&float32);
-    armCode << Tab << ".long" << Tab << *float10 << NewLine;
+    auto  float32 = static_cast<float>(*reinterpret_cast<double*>(&float64));
+    auto* float10 = reinterpret_cast<uint32_t*>(&float32);
+    armCode << *float10;
     return armCode.str();
 }
 std::string ARMGen::ARMBuilder::zeroValue(llvmirParser::ArrayTypeContext* context)
 {
     std::stringstream armCode;
-    int space = 4;
-    auto type = context;
-    while(type->type()->arrayType()!= nullptr){
+    int               space = LONG_SIZE;
+    auto              type  = context;
+    while (type->type()->arrayType() != nullptr) {
         space *= std::stoi(type->IntLit()->getText());
         type = type->type()->arrayType();
     }
     space *= std::stoi(type->IntLit()->getText());
-    armCode << Tab << ".zero" << Tab << space << NewLine;
+    armCode << "zero" << Tab << space;
     return armCode.str();
 }
-std::string ARMGen::ARMBuilder::getBuilder(llvmirParser::LocalDefInstContext* context)
+void ARMGen::ARMBuilder::getBuilder(
+    std::string                                  LocalId,
+    std::vector<llvmirParser::TypeValueContext*> typeValue,
+    llvmirParser::TypeContext*                   type
+)
 {
-    std::stringstream armCode;
-    auto Rd = context->LocalIdent();
-    auto type = context->valueInstruction()->getElementPtrInst()->type();
-    auto Rn = context->valueInstruction()->getElementPtrInst()->typeValue()[0];
-    auto addr = context->valueInstruction()->getElementPtrInst()->typeValue();
-    std::map<std::string ,int> meme;
-    int offset = 0;
+    auto Rn    = typeValue[0]->value()->getText();
+    auto func_ = std::dynamic_pointer_cast<Function>(Tops.back());
 
-    for (int i=1;i<addr.size();i++) {
-        if (addr[i]->value()->constant()!= nullptr){
-            offset += std::stoi(addr[i]->value()->getText());
-        }
-        else{
-            meme.insert(std::make_pair(addr[i]->value()->getText(), 1));
+    std::map<std::string, int> meme;
+    int                        offset = 0;
+    // 先处理一下里面的变量和offset
+    for (int i = 1; i < typeValue.size(); i++) {
+        if (typeValue[i]->value()->constant() != nullptr) {
+            offset += std::stoi(typeValue[i]->value()->getText());
+        } else {
+            meme.insert(std::make_pair(getRegister(typeValue[i]->value()->getText()), LONG_SIZE));
         }
         int lit;
-        if (type->arrayType()!= nullptr){
-            lit = std::stoi(type->arrayType()->IntLit()->getText()) * 4;
-        }
-        else lit = 4;
-        for (auto &x: meme) {
-            x.second = x.second * lit;
-        }
+        if (type->arrayType() != nullptr) {
+            lit  = std::stoi(type->arrayType()->IntLit()->getText());
+            type = type->arrayType()->type();
+        } else
+            lit = 1;
+        for (auto& x : meme) { x.second = x.second * lit; }
         offset *= lit;
     }
-    for (auto &x: meme) {
-        armCode <<  Tab << "mov" << " " << getRegister() << ", #" << x.second << NewLine;
-        armCode <<  Tab << "mul" << " " << getRegister() << ", " << getRegister() << ", " << getRegister() << NewLine;
-        armCode <<  Tab << "add" << " " << getRegister() << ", " << getRegister() << ", " << getRegister() << NewLine;
-    }
-    if (meme.empty()){
+    offset *= LONG_SIZE;
 
+
+    // 检查是否为全局变量，是的话要返回对应的寄存器
+    if (Rn[0] != '@') {
+        // 检查有几个变量在里头，没有的话就不用输出句子，将偏移地址赋给变量即可
+        if (meme.empty()) {
+            LocalId_Offset[LocalId] = LocalId_Offset[Rn] + offset;
+        }
+        // 有的话要一个一个一个加进去
+        else {
+            offset    = offset + LocalId_Offset[Rn];
+            auto add_ = std::make_shared<AddSen>(
+                getRegister(LocalId), "sp", HASHTAG + std::to_string(offset)
+            );
+            func_->addInst(add_);
+            for (auto& x : meme) {
+                auto add_1 =
+                    std::make_shared<AddSen>(getRegister(LocalId), getRegister(LocalId), x.first);
+                func_->addInst(add_1);
+                //                armCode << Tab << "add" << " " << getRegister(LocalId) << ", " <<
+                //                getRegister(LocalId) << ", " << x.first << ", mul " << x.second <<
+                //                NewLine;
+            }
+        }
+
+    } else {   // 是的话要先看看该函数是否已经存过该全局变量
+        auto finder = GlobalId_Label.find(Rn);
+        if (finder == GlobalId_Label.end()) {
+            GlobalIdNum += 1;
+            GlobalId_Label.insert(
+                std::make_pair(Rn, ".ZYNB" + func_->getname() + std::to_string(GlobalIdNum))
+            );
+            auto ldr_ = std::make_shared<LdrSen>(getRegister(Rn), GlobalId_Label[Rn]);
+            func_->addInst(ldr_);
+            //                    armCode << Tab << "ldr" << " " << R << ", " << GlobalId_Label[Rn]
+            //                    << NewLine;
+        }
+
+        for (auto& x : meme) {
+            auto mov_ = std::make_shared<MovSen>("r11", HASHTAG + std::to_string(x.second));
+            auto mul_ = std::make_shared<MulSen>(x.first, x.first, "r11");
+            auto add_ = std::make_shared<AddSen>(getRegister(Rn), getRegister(Rn), x.first);
+            func_->addInst(mov_);
+            func_->addInst(mul_);
+            func_->addInst(add_);
+            //                    armCode << Tab << "add" << " " << getRegister(LocalId) << ", " <<
+            //                    getRegister(LocalId) << ", " << x.first << ", mul " << x.second <<
+            //                    NewLine;
+        }
+        auto add_1 = std::make_shared<AddSen>(
+            getRegister(LocalId), getRegister(Rn), HASHTAG + std::to_string(offset)
+        );
+        func_->addInst(add_1);
     }
-    else armCode << Tab << "ldr" << " " << getRegister() << ", " << "[" << getRegister() << ", #" << offset << "]" << NewLine;
-    return armCode.str();
+}
+
+
+
+
+void ARMGen::ARMBuilder::callBuilder(llvmirParser::CallInstContext* context)
+{
+    int  RgNum    = 0;
+    auto args     = context->args();
+    auto funcName = context->value()->getText().erase(0, 1);
+    if (args != nullptr) {
+        for (auto x : args->arg()) {
+            if (getRegister(x->value()->getText()) != "r" + std::to_string(RgNum)) {
+                //                    armCode << exchange(x->getText(), Registers[RgNum]);
+            }
+        }
+    }
+    auto bl_ = std::make_shared<BlSen>(funcName);
+    std::dynamic_pointer_cast<Function>(Tops.back())->addInst(bl_);
+}
+void ARMGen::ARMBuilder::memsetBuilder(string start_, int space_)
+{
+    auto func_ = std::dynamic_pointer_cast<ARMGen::Function>(Tops.back());
+    if (local_unique.find("0") == local_unique.end()) {
+        local_unique.insert("0");
+        auto mov_ = std::make_shared<MovSen>(getRegister("0"), "#0");
+        func_->addInst(mov_);
+    }
+    for (int i = 0; i < space_ / LONG_SIZE; ++i) {
+        auto str_ = std::make_shared<StrSen>(
+            makeSp(LocalId_Offset[start_] + LONG_SIZE * i), getRegister("0")
+        );
+        func_->addInst(str_);
+    }
+}
+
+
+void ARMGen::ARMBuilder::push_rg(string rg)
+{
+    rg_push.insert(rg);
+}
+
+void ARMGen::ARMBuilder::mapInsert(std::string Rd, const std::string& Rn)
+{
+    if (!Rn.empty()) { TimeToRelease[Rn] = Rd; }
+    //         std::cout<<Rn << TimeToRelease[Rn] << NewLine;
+}
+void ARMGen::ARMBuilder::release(const std::string& Rg)
+{
+    auto finder = Greater.find(Rg);
+    if (finder != Greater.end()) {
+        for (const auto& x : Greater[Rg]) { removeRegister(x); }
+        Greater.erase(finder);
+    }
+}
+void ARMGen::ARMBuilder::makeMapGreatAgain()
+{
+    for (auto& it : TimeToRelease) {
+        Greater[it.second].push_back(it.first);
+        //            std::cout<<it.second<<" "<< it.first << NewLine;
+    }
+    TimeToRelease.clear();
+    for (auto& x : local_ident) {
+        if (LocalId_Offset.find(x) != LocalId_Offset.end()) {
+            release(x);
+            //                std::cout <<x<<  NewLine;
+            continue;
+        }
+        release(x);
+        Id_Registers.insert(std::make_pair(x, *Registers.begin()));
+        //            std::cout <<x<<" "<< *Registers.begin() << NewLine;
+        Registers.erase(Registers.begin());
+    }
+    // 反复利用unique
+    local_unique.clear();
+}
+
+void ARMGen::ARMBuilder::removeRegister(const std::string& Id)
+{
+    if (Id_Registers.find(Id) != Id_Registers.end()) { Registers.insert(Id_Registers[Id]); }
+}
+
+string ARMGen::ARMBuilder::toString()
+{
+    std::stringstream ss;
+    ss << "\t.text\n";
+    ss << "\t.eabi_attribute 28, 1\n"
+          "\t.syntax unified\n"
+          "\t.eabi_attribute\t67, \"2.09\"\t@ Tag_conformance\n"
+          "\t.eabi_attribute\t6, 1\t@ Tag_CPU_arch\n"
+          "\t.eabi_attribute\t8, 1\t@ Tag_ARM_ISA_use\n"
+          "\t.fpu\tneon\n"
+          "\t.eabi_attribute\t34, 1\t@ Tag_CPU_unaligned_access\n"
+          "\t.eabi_attribute\t17, 1\t@ Tag_ABI_PCS_GOT_use\n"
+          "\t.eabi_attribute\t20, 1\t@ Tag_ABI_FP_denormal\n"
+          "\t.eabi_attribute\t21, 1\t@ Tag_ABI_FP_exceptions\n"
+          "\t.eabi_attribute\t23, 3\t@ Tag_ABI_FP_number_model\n"
+          "\t.eabi_attribute\t24, 1\t@ Tag_ABI_align_needed\n"
+          "\t.eabi_attribute\t25, 1\t@ Tag_ABI_align_preserved\n"
+          "\t.eabi_attribute\t38, 1\t@ Tag_ABI_FP_16bit_format\n"
+          "\t.eabi_attribute\t14, 0\t@ Tag_ABI_PCS_R9_use\n";
+    for (const auto& x : Tops) { ss << x->toString(); }
+    ss << "\t.section\t\".note.GNU-stack\",\"\",%progbits\n";
+    ss << NewLine;
+    return ss.str();
+}
+void ARMGen::ARMBuilder::idInsert(std::string id_)
+{
+    if (local_unique.find(id_) == local_unique.end()) {
+        local_unique.insert(id_);
+        local_ident.push_back(id_);
+        //                std::cout << id_ <<  NewLine;
+    }
+}
+void ARMGen::ARMBuilder::getCheck(std::string LocalId)
+{
+    LocalId_Offset[LocalId] = 0;
+}
+void ARMGen::ARMBuilder::bitcastBuilder(string Rd, string Rn)
+{
+    LocalId_Offset[Rd] = LocalId_Offset[Rn];
 }

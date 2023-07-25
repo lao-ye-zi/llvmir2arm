@@ -7,57 +7,78 @@
 
 #include <string>
 #include "llvmirParser.h"
+#include "ARMProgram.h"
 
+#define LONG_SIZE 4
 
 namespace ARMGen{
 
+class ARMBuilder
+{
+public:
+    ARMBuilder() = default;
+    string toString();
+
+    void globalIdentBuilder(llvmirParser::GlobalDefContext* context);
+    void funcHeaderBuilder(llvmirParser::FuncHeaderContext* context);
+    void labelBuilder(const std::string& context);
+    void allocaBuilder(llvmirParser::TypeContext* type, const std::string& LocalIdent);
+    void allocaAllBuilder();
+    void loadBuilder(std::string Rd, std::string Rn);
+    void addBuilder(const std::string& Rd, std::string Rn1, std::string Rn2);
+    void faddBuilder(const std::string& Rd, std::string Rn1, std::string Rn2);
+    void subBuilder(const std::string& Rd, std::string Rn1, std::string Rn2);
+    void fsubBuilder(const std::string& Rd, std::string Rn1, std::string Rn2);
+    void mulBuilder(const std::string& Rd, std::string Rn1, std::string Rn2);
+    void fmulBuilder(const std::string& Rd, std::string Rn1, std::string Rn2);
+    void sdivBuilder(const std::string& Rd, std::string Rn1, std::string Rn2);
+    void fdivBuilder(const std::string& Rd, std::string Rn1, std::string Rn2);
+    void sremBuilder(const std::string& Rd, std::string Rn1, std::string Rn2);
 
 
-    enum condition {
-        EQ, // ==
-        NE, // !=
-        GT, // >
-        GE, // >=
-        LT, // <
-        LE, // <=
-        NOP
-    };
-
-    class ARMBuilder{
-    public:
-        ARMBuilder();
-
-        static std::string  registerMapBuilder();
-        static std::string globalIdentBuilder(llvmirParser::GlobalDefContext *context);
-        static std::string funcHeaderBuilder(llvmirParser::FuncHeaderContext *context);
-        static std::string labelBuilder(std::string context);
-        static void allocaBuilder(llvmirParser::LocalDefInstContext *context);
-        static std::string allocaAllBuilder();
-        static std::string loadBuilder(llvmirParser::LocalDefInstContext *context);
-        static std::string addBuilder(llvmirParser::LocalDefInstContext *context);
-        static std::string subBuilder(llvmirParser::LocalDefInstContext *context);
-        static std::string getBuilder(llvmirParser::LocalDefInstContext *context);
+    void getBuilder(
+        std::string                                  LocalId,
+        std::vector<llvmirParser::TypeValueContext*> typeValue,
+        llvmirParser::TypeContext*                   type
+    );
+    void getCheck(std::string LocalId);
+    void callBuilder(llvmirParser::CallInstContext* context);
+    void bitcastBuilder(string Rd, string Rn);
+    void memsetBuilder(string start_, int space_);
 
 
-        static std::string storeBuilder(llvmirParser::StoreInstContext *context);
-        static std::string retBuilder(llvmirParser::RetTermContext *context);
-        static std::string brBuilder(llvmirParser::BrTermContext *context);
+    void icmpMapBuilder(const string& bool_, const string& flag_);
+    void icmpBuilder(string& rn1, string& rn2);
 
-        static std::string fnStart();
-        static std::string fnEnd();
+    void storeBuilder(std::string Rn, std::string Rd);
+    void retBuilder(llvmirParser::RetTermContext* context);
+    void brBuilder(llvmirParser::BrTermContext* context);
+    void condBrBuilder(string bool_, string label1, string label2);
 
-        static void makeGlobalId(llvmirParser::ValueContext *Rn);
+    void releaseMapBuilder(llvmirParser::FuncBodyContext* context);
+    void mapInsert(std::string Rd, const std::string& Rn);
+    void release(const std::string& Rg);
+    void makeMapGreatAgain();
+    void idInsert(std::string id_);
+    void fnEnd();
+    void push_rg(string rg);
+
+    static void makeGlobalId(llvmirParser::ValueContext* Rn);
 
 
-        static std::string getRegister();
-        static std::string getId(std::string basicString);
-        static std::string makeSp(int offset);
-        static std::string intValue(llvmirParser::IntConstContext *context);
-        static std::string floatValue(llvmirParser::FloatConstContext *context);
-        static std::string arrayValue(llvmirParser::ArrayConstContext *context);
-        static std::string zeroValue(llvmirParser::ArrayTypeContext *context);
-        std::string        getGlobalId(std::string basicString);
-    };
+    std::string         getRegister(const std::string Id);
+    void                removeRegister(const std::string& Id);
+    std::string         getId(std::string basicString);
+    std::string         makeSp(int offset);
+    std::string         intValue(const string& context);
+    std::string         floatValue(const string& context);
+    std::vector<string> arrayValue(llvmirParser::ArrayConstContext* context);
+    std::string         zeroValue(llvmirParser::ArrayTypeContext* context);
+    std::string         getGlobalId(std::string basicString);
+
+protected:
+    std::vector<std::shared_ptr<TopEntity>> Tops;
+};
 
 
     }

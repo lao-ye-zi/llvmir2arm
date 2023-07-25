@@ -16,7 +16,7 @@ file(GLOB SRC_LIST_LLVMIR ${SRC_LIST_LLVMIR} ${PROJECT_SOURCE_DIR}/IR*.cpp)
 
 add_executable(${PROJECT_NAME} ${SRC_LIST_LLVMIR} ARMBuilder.h InstructionBuilder.h ARMLogger.h BuilderNeed.h
         main.cpp
-        ARMBuilder.cpp)
+        ARMBuilder.cpp ARMSen.cpp ARMSen.h ARMProgram.cpp ARMProgram.h)
 target_include_directories(${PROJECT_NAME} PUBLIC /usr/local/include/antlr4-runtime)
 target_link_libraries(${PROJECT_NAME} antlr4-runtime)
 target_link_libraries(${PROJECT_NAME} Threads::Threads)

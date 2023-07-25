@@ -6,25 +6,56 @@
 #include "ARMLogger.h"
 #include "ARMBuilder.h"
 
-std::shared_ptr<ARMGen::ARMBuilder>         g_builder;
-std::ofstream armCode("../testsrc/1.txt");
-
-
+std::shared_ptr<ARMGen::ARMBuilder> g_builder;
+std::ofstream                       armCode("../testsrc/1.txt");
+std::vector<std::string>            release;
+bool                                mapbuild = true;
+std::string                         LocalIdent;
+std::string                         LastId;
+std::string                         LastType;
+std::string                         LastOP1;
+std::string                         LastOP2;
 
 /// topLevelEntity* EOF
 /// \param context
 /// \return
-std::any Visitor::visitCompilationUnit(llvmirParser::CompilationUnitContext *context) {
+std::any Visitor::visitCompilationUnit(llvmirParser::CompilationUnitContext* context)
+{
     LOGD("Enter CompUnit");
 
     // Init builder and layer controller
     g_builder = std::make_shared<ARMGen::ARMBuilder>(ARMGen::ARMBuilder());
 
-    armCode << g_builder->registerMapBuilder();
+    std::vector<llvmirParser::TopLevelEntityContext*> Global;
+    std::vector<llvmirParser::TopLevelEntityContext*> Data;
+    std::vector<llvmirParser::TopLevelEntityContext*> Rodata;
 
-    for (auto& x: context->topLevelEntity()) {
-        x->accept(this);
+
+    for (auto& x : context->topLevelEntity()) {
+        if (x->globalDef() != nullptr) {
+            Global.emplace_back(x);
+        } else
+            x->accept(this);
     }
+
+    if (!Global.empty()) {
+        for (auto x : Global) {
+            if (x->globalDef()->immutable()->getText() == "global") {
+                Data.emplace_back(x);
+            } else
+                Rodata.emplace_back(x);
+        }
+        if (!Data.empty()) {
+            for (auto& y : Data) { y->accept(this); }
+        }
+        if (!Rodata.empty()) {
+            for (auto& y : Rodata) { y->accept(this); }
+        }
+    }
+
+
+    armCode << g_builder->toString();
+    armCode.close();
     return 0;
 }
 
@@ -66,10 +97,9 @@ std::any Visitor::visitGlobalDecl(llvmirParser::GlobalDeclContext *context) {
 /// \return
 std::any Visitor::visitGlobalDef(llvmirParser::GlobalDefContext *context) {
     if(context->GlobalIdent()!= nullptr){
-        armCode << ARMGen::ARMBuilder::globalIdentBuilder(context);
+        g_builder->globalIdentBuilder(context);
     }else
         LOGD("error");
-//    std::cout<<context->type()->getText()<<": "<<context->constant()->getText()<<"\n";
     return 0;
 }
 
@@ -118,9 +148,12 @@ std::any Visitor::visitFuncDef(llvmirParser::FuncDefContext *context) {
 /// preemption? type GlobalIdent
 /// \param context
 /// \return
-std::any Visitor::visitFuncHeader(llvmirParser::FuncHeaderContext *context) {
-    if (context->GlobalIdent()!= nullptr){
-        armCode<<g_builder->funcHeaderBuilder(context);
+std::any Visitor::visitFuncHeader(llvmirParser::FuncHeaderContext *context)
+{
+    if (context->GlobalIdent() != nullptr) { g_builder->funcHeaderBuilder(context); }
+    for (auto param : context->params()->param()) {
+        g_builder->idInsert(param->LocalIdent()->getText());
+        release.emplace_back(param->LocalIdent()->getText());
     }
     return 0;
 }
@@ -128,198 +161,405 @@ std::any Visitor::visitFuncHeader(llvmirParser::FuncHeaderContext *context) {
 /// '{' basicBlock+ '}';
 /// \param context
 /// \return
-std::any Visitor::visitFuncBody(llvmirParser::FuncBodyContext *context) {
-    armCode << g_builder->fnStart();
-    for (auto& x:context->basicBlock()) {
+std::any Visitor::visitFuncBody(llvmirParser::FuncBodyContext *context)
+{
+    for (auto x : context->basicBlock()) {
+        //        std::cout<< x->getText()<<NewLine;
         x->accept(this);
     }
-    armCode << g_builder->fnEnd();
+    mapbuild = false;
+    g_builder->makeMapGreatAgain();
+    g_builder->allocaAllBuilder();
+    for (auto x : context->basicBlock()) { x->accept(this); }
+    mapbuild = true;
+    g_builder->fnEnd();
+    LastOP1 = "";
+    LastOP2 = "";
+    LastId  = "";
     return 0;
 }
 
 /// LabelIdent? instruction* terminator;
 /// \param context
 /// \return
-std::any Visitor::visitBasicBlock(llvmirParser::BasicBlockContext *context) {
+std::any Visitor::visitBasicBlock(llvmirParser::BasicBlockContext *context)
+{
 
-    std::vector<llvmirParser::InstructionContext *> alloca;
-    std::vector<llvmirParser::InstructionContext*> notAlloca;
 
-    if (context->LabelIdent()!= nullptr){
-        armCode << ARMGen::ARMBuilder::labelBuilder(context->LabelIdent()->getText());
-    }
+    if (mapbuild) {
+        // 先构建一个寄存器分配表
+        // 遍历所有的instruction，构造一个释放表
+        for (auto x : context->instruction()) { x->accept(this); }
 
-    for (auto x:context->instruction()) {
-        if (x->localDefInst()!= nullptr){
-            if (x->localDefInst()->valueInstruction()->allocaInst()!= nullptr){
-                alloca.emplace_back(x);
-                continue ;
-            }
+    } else {
+        // 第二遍访问时可以先根据第一次的alloca分配表先为栈帧分配空间，然后开始添加指令
+        if (context->LabelIdent() != nullptr) {
+            g_builder->labelBuilder(context->LabelIdent()->getText());
         }
-        notAlloca.emplace_back(x);
-    }
-    for (auto& x:alloca) {
-        x->accept(this);
-    }
-    armCode << g_builder->allocaAllBuilder();
 
-    for (auto& x:notAlloca) {
-        x->accept(this);
+        for (auto x : context->instruction()) { x->accept(this); }
+
+        if (context->terminator() != nullptr) { context->terminator()->accept(this); }
     }
-    if (context->terminator()!= nullptr){
-        context->terminator()->accept(this);
-    }
+
     return 0;
 }
 
-///
+/// instruction:
+//	localDefInst
+//	| valueInstruction
+//	| storeInst;
 /// \param context
 /// \return
-std::any Visitor::visitInstruction(llvmirParser::InstructionContext *context) {
-    if(context->localDefInst()!= nullptr){
-        context->localDefInst()->accept(this);
-    }
-    if(context->storeInst()!= nullptr){
-        context->storeInst()->accept(this);
-    }
-    if(context->valueInstruction()!= nullptr ){
-        context->valueInstruction()->accept(this);
-    }
+std::any Visitor::visitInstruction(llvmirParser::InstructionContext* context)
+{
+
+    if (context->localDefInst() != nullptr) { context->localDefInst()->accept(this); }
+    if (context->storeInst() != nullptr) { context->storeInst()->accept(this); }
+    if (context->valueInstruction() != nullptr) { context->valueInstruction()->accept(this); }
+
     return 0;
 }
 
-std::any Visitor::visitTerminator(llvmirParser::TerminatorContext *context) {
-    if (context->retTerm()!= nullptr){
-        context->retTerm()->accept(this);
-    }
-    if (context->brTerm()!= nullptr){
-        context->brTerm()->accept(this);
-    }
-    if (context->condBrTerm()!= nullptr){
-        context->condBrTerm()->accept(this);
-    }
+std::any Visitor::visitTerminator(llvmirParser::TerminatorContext *context)
+{
+    if (context->retTerm() != nullptr) { context->retTerm()->accept(this); }
+    if (context->brTerm() != nullptr) { context->brTerm()->accept(this); }
+    if (context->condBrTerm() != nullptr) { context->condBrTerm()->accept(this); }
     return 0;
 }
 
-std::any Visitor::visitLocalDefInst(llvmirParser::LocalDefInstContext *context) {
-    if(context->valueInstruction()->allocaInst()!= nullptr){
-        g_builder->allocaBuilder(context);
+/// localDefInst: LocalIdent '=' valueInstruction;
+/// \param context
+/// \return
+std::any Visitor::visitLocalDefInst(llvmirParser::LocalDefInstContext* context)
+{
+    LocalIdent = context->LocalIdent()->getText();
+
+    context->valueInstruction()->accept(this);
+    if (mapbuild) {
+        g_builder->idInsert(LocalIdent);
+        if (!LastId.empty()) { g_builder->mapInsert(LocalIdent, LastId); }
+        if (!LastOP1.empty()) { g_builder->mapInsert(LocalIdent, LastOP1); }
+        if (!LastOP2.empty()) { g_builder->mapInsert(LocalIdent, LastOP2); }
+        if (!release.empty()) {
+            for (auto& x : release) { g_builder->mapInsert(LocalIdent, x); }
+            release.clear();
+        }
+        LastId = LocalIdent;
     }
-    else if (context->valueInstruction()->loadInst()!= nullptr){
-        armCode << g_builder->loadBuilder(context);
-    }
-    else if (context->valueInstruction()->addInst()!= nullptr){
-        armCode << g_builder->addBuilder(context);
-    }
-    else if (context->valueInstruction()->subInst()){
-        armCode << g_builder->subBuilder(context);
-    }
-    else if (context->valueInstruction()->getElementPtrInst()!= nullptr){
-        armCode << g_builder->getBuilder(context);
-    }
+
     return 0;
 }
 
-std::any Visitor::visitValueInstruction(llvmirParser::ValueInstructionContext *context) {
-
-    return std::any();
+std::any Visitor::visitValueInstruction(llvmirParser::ValueInstructionContext *context)
+{
+    /**
+     * valueInstruction:
+//算数指令
+addInst
+| fAddInst
+| subInst
+| fSubInst
+| mulInst
+| fMulInst
+| uDivInst
+| sDivInst
+| fDivInst
+| uRemInst
+| sRemInst
+| fRemInst
+//位移指令
+| shlInst
+| lShrInst
+| aShrInst
+| andInst
+| orInst
+| xorInst
+// Memory instructions
+| allocaInst
+| loadInst
+| getElementPtrInst
+// Conversion instructions
+| zExtInst
+| sExtInst
+| siToFpInst
+| fpToSiInst
+| bitCastInst
+// Other instructions
+| iCmpInst
+| fCmpInst
+| callInst;
+     */
+    if (context->addInst() != nullptr) {
+        context->addInst()->accept(this);
+    } else if (context->fAddInst() != nullptr) {
+        context->fAddInst()->accept(this);
+    } else if (context->subInst() != nullptr) {
+        context->subInst()->accept(this);
+    } else if (context->fSubInst() != nullptr) {
+        context->fSubInst()->accept(this);
+    } else if (context->subInst() != nullptr) {
+        context->subInst()->accept(this);
+    } else if (context->mulInst() != nullptr) {
+        context->mulInst()->accept(this);
+    } else if (context->fMulInst() != nullptr) {
+        context->fMulInst()->accept(this);
+    } else if (context->uDivInst() != nullptr) {
+        context->uDivInst()->accept(this);
+    } else if (context->sDivInst() != nullptr) {
+        context->sDivInst()->accept(this);
+    } else if (context->fDivInst() != nullptr) {
+        context->fDivInst()->accept(this);
+    } else if (context->uRemInst() != nullptr) {
+        context->uRemInst()->accept(this);
+    } else if (context->sRemInst() != nullptr) {
+        context->sRemInst()->accept(this);
+    } else if (context->fRemInst() != nullptr) {
+        context->fRemInst()->accept(this);
+    } else if (context->shlInst() != nullptr) {
+        context->shlInst()->accept(this);
+    } else if (context->lShrInst() != nullptr) {
+        context->lShrInst()->accept(this);
+    } else if (context->aShrInst() != nullptr) {
+        context->aShrInst()->accept(this);
+    } else if (context->andInst() != nullptr) {
+        context->andInst()->accept(this);
+    } else if (context->orInst() != nullptr) {
+        context->orInst()->accept(this);
+    } else if (context->xorInst() != nullptr) {
+        context->xorInst()->accept(this);
+    } else if (context->allocaInst() != nullptr) {
+        context->allocaInst()->accept(this);
+    } else if (context->loadInst() != nullptr) {
+        context->loadInst()->accept(this);
+    } else if (context->getElementPtrInst() != nullptr) {
+        context->getElementPtrInst()->accept(this);
+    } else if (context->zExtInst() != nullptr) {
+        context->zExtInst()->accept(this);
+    } else if (context->sExtInst() != nullptr) {
+        context->sExtInst()->accept(this);
+    } else if (context->siToFpInst() != nullptr) {
+        context->siToFpInst()->accept(this);
+    } else if (context->fpToSiInst() != nullptr) {
+        context->fpToSiInst()->accept(this);
+    } else if (context->bitCastInst() != nullptr) {
+        context->bitCastInst()->accept(this);
+    } else if (context->iCmpInst() != nullptr) {
+        context->iCmpInst()->accept(this);
+    } else if (context->fCmpInst() != nullptr) {
+        context->fCmpInst()->accept(this);
+    } else if (context->callInst() != nullptr) {
+        context->callInst()->accept(this);
+    }
+    return 0;
 }
 
 std::any Visitor::visitOverflowFlag(llvmirParser::OverflowFlagContext *context) {
-    return std::any();
+    return 0;
 }
 
-std::any Visitor::visitAddInst(llvmirParser::AddInstContext *context) {
-    return std::any();
+/// addInst:
+//	'add' overflowFlag* typeValue ',' value;
+/// \param context
+/// \return
+std::any Visitor::visitAddInst(llvmirParser::AddInstContext* context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = context->value()->getText();
+    if (!mapbuild) { g_builder->addBuilder(LocalIdent, LastOP1, LastOP2); }
+    return 0;
 }
 
-std::any Visitor::visitFAddInst(llvmirParser::FAddInstContext *context) {
-    return std::any();
+std::any Visitor::visitFAddInst(llvmirParser::FAddInstContext *context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = context->value()->getText();
+    if (!mapbuild) { g_builder->faddBuilder(LocalIdent, LastOP1, LastOP2); }
+    return 0;
 }
 
-std::any Visitor::visitSubInst(llvmirParser::SubInstContext *context) {
-    return std::any();
+std::any Visitor::visitSubInst(llvmirParser::SubInstContext *context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = context->value()->getText();
+    if (!mapbuild) { g_builder->subBuilder(LocalIdent, LastOP1, LastOP2); }
+    return 0;
 }
 
-std::any Visitor::visitFSubInst(llvmirParser::FSubInstContext *context) {
-    return std::any();
+std::any Visitor::visitFSubInst(llvmirParser::FSubInstContext *context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = context->value()->getText();
+    if (!mapbuild) { g_builder->fsubBuilder(LocalIdent, LastOP1, LastOP2); }
+    return 0;
 }
 
-std::any Visitor::visitMulInst(llvmirParser::MulInstContext *context) {
-    return std::any();
+std::any Visitor::visitMulInst(llvmirParser::MulInstContext *context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = context->value()->getText();
+    if (!mapbuild) {
+        g_builder->mulBuilder(LocalIdent, LastOP1, LastOP2);
+    } else {
+        if (LastOP2[0] != '%') { g_builder->idInsert(LastOP2); }
+    }
+    return 0;
 }
 
-std::any Visitor::visitFMulInst(llvmirParser::FMulInstContext *context) {
-    return std::any();
+std::any Visitor::visitFMulInst(llvmirParser::FMulInstContext *context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = context->value()->getText();
+    if (!mapbuild) { g_builder->fmulBuilder(LocalIdent, LastOP1, LastOP2); }
+    return 0;
 }
 
 std::any Visitor::visitUDivInst(llvmirParser::UDivInstContext *context) {
-    return std::any();
+    return 0;
 }
 
-std::any Visitor::visitSDivInst(llvmirParser::SDivInstContext *context) {
-    return std::any();
+std::any Visitor::visitSDivInst(llvmirParser::SDivInstContext *context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = context->value()->getText();
+    if (!mapbuild) {
+        g_builder->sdivBuilder(LocalIdent, LastOP1, LastOP2);
+    } else {
+        g_builder->push_rg("lr");
+        if (LastOP2[0] != '%') { g_builder->idInsert(LastOP2); }
+    }
+    return 0;
 }
 
-std::any Visitor::visitFDivInst(llvmirParser::FDivInstContext *context) {
-    return std::any();
+std::any Visitor::visitFDivInst(llvmirParser::FDivInstContext *context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = context->value()->getText();
+    if (!mapbuild) { g_builder->fdivBuilder(LocalIdent, LastOP1, LastOP2); }
+    return 0;
 }
 
 std::any Visitor::visitURemInst(llvmirParser::URemInstContext *context) {
-    return std::any();
+    return 0;
 }
 
-std::any Visitor::visitSRemInst(llvmirParser::SRemInstContext *context) {
-    return std::any();
+std::any Visitor::visitSRemInst(llvmirParser::SRemInstContext *context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = context->value()->getText();
+    if (!mapbuild) {
+        g_builder->sremBuilder(LocalIdent, LastOP1, LastOP2);
+    } else {
+        g_builder->push_rg("lr");
+        if (LastOP2[0] != '%') { g_builder->idInsert(LastOP2); }
+    }
+    return 0;
 }
 
 std::any Visitor::visitFRemInst(llvmirParser::FRemInstContext *context) {
-    return std::any();
+    return 0;
 }
 
-std::any Visitor::visitStoreInst(llvmirParser::StoreInstContext *context) {
-    armCode << g_builder->storeBuilder(context);
-    return std::any();
+std::any Visitor::visitStoreInst(llvmirParser::StoreInstContext *context)
+{
+    context->typeValue()[0]->accept(this);
+    LastOP2 = context->typeValue()[1]->value()->getText();
+    if (!mapbuild) {
+        g_builder->storeBuilder(LastOP1, LastOP2);
+    } else {
+        release.push_back(LastOP1);
+        g_builder->idInsert(LastOP1);
+        release.push_back(LastOP2);
+        g_builder->idInsert(LastOP2);
+    }
+    return 0;
 }
 
 std::any Visitor::visitShlInst(llvmirParser::ShlInstContext *context) {
-    return std::any();
+    return 0;
 }
 
 std::any Visitor::visitLShrInst(llvmirParser::LShrInstContext *context) {
-    return std::any();
+    return 0;
 }
 
 std::any Visitor::visitAShrInst(llvmirParser::AShrInstContext *context) {
-    return std::any();
+    return 0;
 }
 
 std::any Visitor::visitAndInst(llvmirParser::AndInstContext *context) {
-    return std::any();
+    return 0;
 }
 
 std::any Visitor::visitOrInst(llvmirParser::OrInstContext *context) {
-    return std::any();
+    return 0;
 }
 
 std::any Visitor::visitXorInst(llvmirParser::XorInstContext *context) {
-    return std::any();
+    return 0;
 }
 
-std::any Visitor::visitAllocaInst(llvmirParser::AllocaInstContext *context) {
-    return std::any();
+std::any Visitor::visitAllocaInst(llvmirParser::AllocaInstContext *context)
+{
+    LastOP1 = "";
+    LastOP2 = "";
+    if (mapbuild) {
+        // 为局部变量分配空间
+        g_builder->allocaBuilder(context->type(), LocalIdent);
+    }
+    return 0;
 }
 
-std::any Visitor::visitLoadInst(llvmirParser::LoadInstContext *context) {
-    return std::any();
+std::any Visitor::visitLoadInst(llvmirParser::LoadInstContext *context)
+{
+    LastOP1 = "";
+    LastOP2 = context->typeValue()->value()->getText();
+    if (!mapbuild) {
+        g_builder->loadBuilder(LocalIdent, LastOP2);
+    } else {
+        if (LastOP2[0] == '@') {
+            g_builder->idInsert(LastOP2);
+            release.emplace_back(LastOP2);
+        }
+    }
+    return 0;
 }
 
-std::any Visitor::visitGetElementPtrInst(llvmirParser::GetElementPtrInstContext *context) {
-    return std::any();
+std::any Visitor::visitGetElementPtrInst(llvmirParser::GetElementPtrInstContext *context)
+{
+    LastOP2 = "";
+    LastOP1 = context->typeValue()[0]->value()->getText();
+
+    if (!mapbuild) {
+
+        g_builder->getBuilder(LocalIdent, context->typeValue(), context->type());
+    } else {
+        if (LastOP1[0] == '@') {
+            g_builder->idInsert(LastOP1);
+            release.emplace_back(LastOP1);
+        }
+
+        std::vector<string> zjlnb;
+        auto                typeValues = context->typeValue();
+        for (int i = 1; i < typeValues.size(); i++) {
+            // 若是变量，要加进map里
+            if (typeValues[i]->value()->constant() == nullptr) {
+                zjlnb.push_back(typeValues[i]->value()->getText());
+                g_builder->mapInsert(LocalIdent, typeValues[i]->value()->getText());
+            }
+        }
+        if (zjlnb.empty()) g_builder->getCheck(LocalIdent);
+    }
+    return 0;
 }
 
-std::any Visitor::visitBitCastInst(llvmirParser::BitCastInstContext *context) {
-    return std::any();
+std::any Visitor::visitBitCastInst(llvmirParser::BitCastInstContext *context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = "";
+    if (mapbuild) { g_builder->bitcastBuilder(LocalIdent, LastOP1); }
+    return 0;
 }
 
 std::any Visitor::visitZExtInst(llvmirParser::ZExtInstContext *context) {
@@ -335,41 +575,102 @@ std::any Visitor::visitSiToFpInst(llvmirParser::SiToFpInstContext *context) {
 }
 
 std::any Visitor::visitFpToSiInst(llvmirParser::FpToSiInstContext *context) {
-    return std::any();
+    return 0;
 }
 
-std::any Visitor::visitICmpInst(llvmirParser::ICmpInstContext *context) {
-    return std::any();
+/// 'icmp' iPred typeValue ',' value;
+/// \param context
+/// \return
+std::any Visitor::visitICmpInst(llvmirParser::ICmpInstContext* context)
+{
+    LastOP2 = context->value()->getText();
+    context->typeValue()->accept(this);
+    if (mapbuild) {
+        g_builder->icmpMapBuilder(LocalIdent, context->iPred()->getText());
+    } else {
+        g_builder->icmpBuilder(LastOP1, LastOP2);
+    }
+
+    return 0;
 }
 
 std::any Visitor::visitFCmpInst(llvmirParser::FCmpInstContext *context) {
     return std::any();
 }
 
-std::any Visitor::visitCallInst(llvmirParser::CallInstContext *context) {
-    return std::any();
+/// 	'call' type value '(' args ')';
+/// \param context
+/// \return
+std::any Visitor::visitCallInst(llvmirParser::CallInstContext* context)
+{
+    LastOP1 = "";
+    LastOP2 = "";
+    if (context->value()->getText() == "@llvm.memset.p0.i32") {
+        if (!mapbuild) {
+            g_builder->memsetBuilder(
+                context->args()->arg()[0]->value()->getText(),
+                std::stoi(context->args()->arg()[2]->value()->getText())
+            );
+        } else {
+            g_builder->idInsert("0");
+            release.emplace_back("0");
+        }
+
+    } else {
+        if (!mapbuild) {
+            g_builder->callBuilder(context);
+        } else {   // 若LocalIdent == LastId，则为单独的call指令，需要将参数加进release里面
+            g_builder->push_rg("lr");
+            if (LocalIdent == LastId) {
+                for (auto& x : context->args()->arg()) {
+                    release.push_back(x->value()->getText());
+                    g_builder->idInsert(x->value()->getText());
+                }
+            } else {
+                for (auto& x : context->args()->arg()) {
+                    g_builder->mapInsert(LocalIdent, x->value()->getText());
+                    g_builder->idInsert(x->value()->getText());
+                }
+            }
+        }
+    }
+
+    return 0;
 }
 
 std::any Visitor::visitRetTerm(llvmirParser::RetTermContext *context) {
-    armCode << g_builder->retBuilder(context);
+    g_builder->retBuilder(context);
     return 0;
 }
 
 std::any Visitor::visitBrTerm(llvmirParser::BrTermContext *context) {
-    armCode << g_builder->brBuilder(context);
+    g_builder->brBuilder(context);
     return 0;
 }
 
-std::any Visitor::visitCondBrTerm(llvmirParser::CondBrTermContext *context) {
-    return std::any();
+std::any Visitor::visitCondBrTerm(llvmirParser::CondBrTermContext *context)
+{
+    g_builder->condBrBuilder(
+        context->value()->getText(),
+        context->label()[0]->LocalIdent()->getText(),
+        context->label()[1]->LocalIdent()->getText()
+    );
+    return 0;
 }
 
 std::any Visitor::visitFloatKind(llvmirParser::FloatKindContext *context) {
     return std::any();
 }
 
-std::any Visitor::visitTypeValue(llvmirParser::TypeValueContext *context) {
-    return std::any();
+/// typeValue:
+//	concreteType value;
+/// \param context
+/// \return
+std::any Visitor::visitTypeValue(llvmirParser::TypeValueContext* context)
+{
+    LastType = context->concreteType()->getText();
+    LastOP1  = context->value()->getText();
+    return 0;
 }
 
 std::any Visitor::visitConcreteType(llvmirParser::ConcreteTypeContext *context) {
