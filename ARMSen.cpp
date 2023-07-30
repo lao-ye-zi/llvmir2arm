@@ -13,10 +13,19 @@ string opToStr(ARMGen::ARMOP op_)
     case ARMGen::ARMOP::VSUB: return "vsub.f32";
     case ARMGen::ARMOP::MUL: return "mul";
     case ARMGen::ARMOP::VMUL: return "vmul.f32";
+    case ARMGen::ARMOP::SDIV: return "sdiv";
     case ARMGen::ARMOP::VDIV: return "vdiv.f32";
+    case ARMGen::ARMOP::SREM: return "srem";
     case ARMGen::ARMOP::RSB: return "rsb";
+    case ARMGen::ARMOP::MLA: return "mla";
     case ARMGen::ARMOP::MOV: return "mov";
     case ARMGen::ARMOP::MVN: return "mvn";
+    case ARMGen::ARMOP::MOVGT: return "movgt";
+    case ARMGen::ARMOP::MOVGE: return "movge";
+    case ARMGen::ARMOP::MOVLT: return "movlt";
+    case ARMGen::ARMOP::MOVLE: return "movle";
+    case ARMGen::ARMOP::MOVEQ: return "moveq";
+    case ARMGen::ARMOP::MOVNE: return "movne";
     case ARMGen::ARMOP::STR: return "str";
     case ARMGen::ARMOP::LDR: return "ldr";
     case ARMGen::ARMOP::VSTR: return "vstr";
@@ -80,7 +89,20 @@ string ARMGen::VmulSen::toString()
     return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn1 + Comma + Space + _Rn2 +
            NewLine;
 }
+
+string ARMGen::SdivSen::toString()
+{
+    return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn1 + Comma + Space + _Rn2 +
+           NewLine;
+}
+
 string ARMGen::VdivSen::toString()
+{
+    return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn1 + Comma + Space + _Rn2 +
+           NewLine;
+}
+
+string ARMGen::SremSen::toString()
 {
     return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn1 + Comma + Space + _Rn2 +
            NewLine;
@@ -91,6 +113,12 @@ string ARMGen::RsbSen::toString()
     return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn1 + Comma + Space + _Rn2 +
            NewLine;
 }
+string ARMGen::MlaSen::toString()
+{
+    return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn1 + Comma + Space + _Rn2 +
+           Comma + Space + _Rn3 + NewLine;
+}
+
 
 
 string ARMGen::MovSen::toString()
@@ -98,6 +126,31 @@ string ARMGen::MovSen::toString()
     return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn + NewLine;
 }
 string ARMGen::MvnSen::toString()
+{
+    return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn + NewLine;
+}
+string ARMGen::MovgeSen::toString()
+{
+    return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn + NewLine;
+}
+string ARMGen::MovgtSen::toString()
+{
+    return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn + NewLine;
+}
+string ARMGen::MovltSen::toString()
+{
+    return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn + NewLine;
+}
+string ARMGen::MovleSen::toString()
+{
+    return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn + NewLine;
+}
+string ARMGen::MoveqSen::toString()
+{
+    return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn + NewLine;
+}
+
+string ARMGen::MovneSen::toString()
 {
     return Tab + opToStr(getOp()) + Space + _Rd + Comma + Space + _Rn + NewLine;
 }
@@ -203,3 +256,4 @@ string ARMGen::GlobalId::toString()
 {
     return "\t.long\t" + _name.erase(0, 1) + NewLine;
 }
+

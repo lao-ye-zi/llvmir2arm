@@ -163,9 +163,16 @@ std::any Visitor::visitFuncHeader(llvmirParser::FuncHeaderContext *context)
 /// \return
 std::any Visitor::visitFuncBody(llvmirParser::FuncBodyContext *context)
 {
+    // todo
+    // 现在就是要把全局变量变成一个一个一个本地变量，就是把其地址存到栈里面，传参用的寄存器就决定是r12了
+    // 还有就是把优化常数这个光荣的任务交给昆昆，太难了
     for (auto x : context->basicBlock()) {
         //        std::cout<< x->getText()<<NewLine;
         x->accept(this);
+    }
+    if (!release.empty()) {
+        for (auto x : release) { g_builder->mapInsert("", x); }
+        release.clear();
     }
     mapbuild = false;
     g_builder->makeMapGreatAgain();
@@ -246,9 +253,9 @@ std::any Visitor::visitLocalDefInst(llvmirParser::LocalDefInstContext* context)
             for (auto& x : release) { g_builder->mapInsert(LocalIdent, x); }
             release.clear();
         }
-        LastId = LocalIdent;
     }
 
+    LastId = LocalIdent;
     return 0;
 }
 
@@ -401,8 +408,6 @@ std::any Visitor::visitMulInst(llvmirParser::MulInstContext *context)
     LastOP2 = context->value()->getText();
     if (!mapbuild) {
         g_builder->mulBuilder(LocalIdent, LastOP1, LastOP2);
-    } else {
-        if (LastOP2[0] != '%') { g_builder->idInsert(LastOP2); }
     }
     return 0;
 }
@@ -425,9 +430,6 @@ std::any Visitor::visitSDivInst(llvmirParser::SDivInstContext *context)
     LastOP2 = context->value()->getText();
     if (!mapbuild) {
         g_builder->sdivBuilder(LocalIdent, LastOP1, LastOP2);
-    } else {
-        g_builder->push_rg("lr");
-        if (LastOP2[0] != '%') { g_builder->idInsert(LastOP2); }
     }
     return 0;
 }
@@ -450,9 +452,6 @@ std::any Visitor::visitSRemInst(llvmirParser::SRemInstContext *context)
     LastOP2 = context->value()->getText();
     if (!mapbuild) {
         g_builder->sremBuilder(LocalIdent, LastOP1, LastOP2);
-    } else {
-        g_builder->push_rg("lr");
-        if (LastOP2[0] != '%') { g_builder->idInsert(LastOP2); }
     }
     return 0;
 }
@@ -469,9 +468,8 @@ std::any Visitor::visitStoreInst(llvmirParser::StoreInstContext *context)
         g_builder->storeBuilder(LastOP1, LastOP2);
     } else {
         release.push_back(LastOP1);
-        g_builder->idInsert(LastOP1);
         release.push_back(LastOP2);
-        g_builder->idInsert(LastOP2);
+        if (LastOP2[0] == '@') { g_builder->allocaBuilder(LastOP2); }
     }
     return 0;
 }
@@ -506,7 +504,7 @@ std::any Visitor::visitAllocaInst(llvmirParser::AllocaInstContext *context)
     LastOP2 = "";
     if (mapbuild) {
         // 为局部变量分配空间
-        g_builder->allocaBuilder(context->type(), LocalIdent);
+        g_builder->allocaBuilder(LocalIdent, context->type());
     }
     return 0;
 }
@@ -518,10 +516,7 @@ std::any Visitor::visitLoadInst(llvmirParser::LoadInstContext *context)
     if (!mapbuild) {
         g_builder->loadBuilder(LocalIdent, LastOP2);
     } else {
-        if (LastOP2[0] == '@') {
-            g_builder->idInsert(LastOP2);
-            release.emplace_back(LastOP2);
-        }
+        if (LastOP2[0] == '@') { g_builder->allocaBuilder(LastOP2); }
     }
     return 0;
 }
@@ -535,21 +530,19 @@ std::any Visitor::visitGetElementPtrInst(llvmirParser::GetElementPtrInstContext 
 
         g_builder->getBuilder(LocalIdent, context->typeValue(), context->type());
     } else {
-        if (LastOP1[0] == '@') {
-            g_builder->idInsert(LastOP1);
-            release.emplace_back(LastOP1);
-        }
+        if (LastOP1[0] == '@') { g_builder->allocaBuilder(LastOP1); }
 
-        std::vector<string> zjlnb;
         auto                typeValues = context->typeValue();
         for (int i = 1; i < typeValues.size(); i++) {
-            // 若是变量，要加进map里
-            if (typeValues[i]->value()->constant() == nullptr) {
-                zjlnb.push_back(typeValues[i]->value()->getText());
+            // 若是本地变量，要加进map里
+            if (typeValues[i]->value()->LocalIdent() != nullptr) {
                 g_builder->mapInsert(LocalIdent, typeValues[i]->value()->getText());
             }
+            // 若是全局变量要加到内存里
+            else if (typeValues[i]->value()->GlobalIdent() != nullptr) {
+                g_builder->allocaBuilder(typeValues[i]->value()->getText());
+            }
         }
-        if (zjlnb.empty()) g_builder->getCheck(LocalIdent);
     }
     return 0;
 }
@@ -562,12 +555,16 @@ std::any Visitor::visitBitCastInst(llvmirParser::BitCastInstContext *context)
     return 0;
 }
 
-std::any Visitor::visitZExtInst(llvmirParser::ZExtInstContext *context) {
-    return std::any();
+std::any Visitor::visitZExtInst(llvmirParser::ZExtInstContext *context)
+{
+    context->typeValue()->accept(this);
+    LastOP2 = "";
+    if (!mapbuild) { g_builder->zextBuilder(LocalIdent, LastOP1); }
+    return 0;
 }
 
 std::any Visitor::visitSExtInst(llvmirParser::SExtInstContext *context) {
-    return std::any();
+    return 0;
 }
 
 std::any Visitor::visitSiToFpInst(llvmirParser::SiToFpInstContext *context) {
@@ -611,25 +608,32 @@ std::any Visitor::visitCallInst(llvmirParser::CallInstContext* context)
                 context->args()->arg()[0]->value()->getText(),
                 std::stoi(context->args()->arg()[2]->value()->getText())
             );
-        } else {
-            g_builder->idInsert("0");
-            release.emplace_back("0");
         }
 
     } else {
         if (!mapbuild) {
-            g_builder->callBuilder(context);
+            if (LocalIdent == LastId) {
+                g_builder->callBuilder(context);
+            } else {
+                g_builder->callBuilder(context, LocalIdent);
+            }
+
         } else {   // 若LocalIdent == LastId，则为单独的call指令，需要将参数加进release里面
             g_builder->push_rg("lr");
+            // 这里面的变量还要搞一下，常数和全局变量不管
             if (LocalIdent == LastId) {
+                g_builder->callRegister(context);
                 for (auto& x : context->args()->arg()) {
-                    release.push_back(x->value()->getText());
-                    g_builder->idInsert(x->value()->getText());
+                    if (x->value()->LocalIdent() != nullptr) {
+                        release.push_back(x->value()->getText());
+                    }
                 }
             } else {
+                g_builder->callRegister(context, LocalIdent);
                 for (auto& x : context->args()->arg()) {
-                    g_builder->mapInsert(LocalIdent, x->value()->getText());
-                    g_builder->idInsert(x->value()->getText());
+                    if (x->value()->LocalIdent() != nullptr) {
+                        g_builder->mapInsert(LocalIdent, x->value()->getText());
+                    }
                 }
             }
         }

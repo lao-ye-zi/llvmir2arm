@@ -26,12 +26,21 @@ enum class ARMOP {
     VSUB,
     MUL,
     VMUL,
+    SDIV,
     VDIV,
+    SREM,
     RSB,
+    MLA,
 
     // memory
     MOV,
     MVN,
+    MOVGT,
+    MOVGE,
+    MOVLT,
+    MOVLE,
+    MOVEQ,
+    MOVNE,
     STR,
     LDR,
     VSTR,
@@ -195,6 +204,25 @@ protected:
     string _Rn2;
 };
 
+class SdivSen : public ARMSen
+{
+public:
+    string toString() override;
+    SdivSen(string Rd, string Rn1, string Rn2)
+        : _Rd(std::move(Rd))
+        , _Rn1(std::move(Rn1))
+        , _Rn2(std::move(Rn2))
+    {
+        _op = ARMOP::SDIV;
+    }
+
+protected:
+    string _Rd;
+    string _Rn1;
+    string _Rn2;
+};
+
+
 class VdivSen : public ARMSen
 {
 public:
@@ -205,6 +233,24 @@ public:
         , _Rn2(std::move(Rn2))
     {
         _op = ARMOP::VDIV;
+    }
+
+protected:
+    string _Rd;
+    string _Rn1;
+    string _Rn2;
+};
+
+class SremSen : public ARMSen
+{
+public:
+    string toString() override;
+    SremSen(string Rd, string Rn1, string Rn2)
+        : _Rd(std::move(Rd))
+        , _Rn1(std::move(Rn1))
+        , _Rn2(std::move(Rn2))
+    {
+        _op = ARMOP::SREM;
     }
 
 protected:
@@ -229,6 +275,26 @@ protected:
     string _Rd;
     string _Rn1;
     string _Rn2;
+};
+
+class MlaSen : public ARMSen
+{
+public:
+    string toString() override;
+    MlaSen(string Rd, string Rn1, string Rn2, string Rn3)
+        : _Rd(std::move(Rd))
+        , _Rn1(std::move(Rn1))
+        , _Rn2(std::move(Rn2))
+        , _Rn3(std::move(Rn3))
+    {
+        _op = ARMOP::MLA;
+    }
+
+protected:
+    string _Rd;
+    string _Rn1;
+    string _Rn2;
+    string _Rn3;
 };
 
 class MovSen : public ARMSen
@@ -256,6 +322,104 @@ public:
         , _Rn(std::move(Rn))
     {
         _op = ARMOP::MVN;
+    }
+
+protected:
+    string _Rd;
+    string _Rn;
+};
+
+class MovgtSen : public ARMSen
+{
+public:
+    string toString() override;
+    MovgtSen(string Rd, string Rn)
+        : _Rd(std::move(Rd))
+        , _Rn(std::move(Rn))
+    {
+        _op = ARMOP::MOVGT;
+    }
+
+protected:
+    string _Rd;
+    string _Rn;
+};
+
+class MovgeSen : public ARMSen
+{
+public:
+    string toString() override;
+    MovgeSen(string Rd, string Rn)
+        : _Rd(std::move(Rd))
+        , _Rn(std::move(Rn))
+    {
+        _op = ARMOP::MOVGE;
+    }
+
+protected:
+    string _Rd;
+    string _Rn;
+};
+
+
+class MovltSen : public ARMSen
+{
+public:
+    string toString() override;
+    MovltSen(string Rd, string Rn)
+        : _Rd(std::move(Rd))
+        , _Rn(std::move(Rn))
+    {
+        _op = ARMOP::MOVLT;
+    }
+
+protected:
+    string _Rd;
+    string _Rn;
+};
+
+
+class MovleSen : public ARMSen
+{
+public:
+    string toString() override;
+    MovleSen(string Rd, string Rn)
+        : _Rd(std::move(Rd))
+        , _Rn(std::move(Rn))
+    {
+        _op = ARMOP::MOVLE;
+    }
+
+protected:
+    string _Rd;
+    string _Rn;
+};
+
+class MoveqSen : public ARMSen
+{
+public:
+    string toString() override;
+    MoveqSen(string Rd, string Rn)
+        : _Rd(std::move(Rd))
+        , _Rn(std::move(Rn))
+    {
+        _op = ARMOP::MOVEQ;
+    }
+
+protected:
+    string _Rd;
+    string _Rn;
+};
+
+class MovneSen : public ARMSen
+{
+public:
+    string toString() override;
+    MovneSen(string Rd, string Rn)
+        : _Rd(std::move(Rd))
+        , _Rn(std::move(Rn))
+    {
+        _op = ARMOP::MOVNE;
     }
 
 protected:

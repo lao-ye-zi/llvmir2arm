@@ -22,7 +22,7 @@ public:
     void globalIdentBuilder(llvmirParser::GlobalDefContext* context);
     void funcHeaderBuilder(llvmirParser::FuncHeaderContext* context);
     void labelBuilder(const std::string& context);
-    void allocaBuilder(llvmirParser::TypeContext* type, const std::string& LocalIdent);
+    void allocaBuilder(const std::string& LocalIdent, llvmirParser::TypeContext* type = nullptr);
     void allocaAllBuilder();
     void loadBuilder(std::string Rd, std::string Rn);
     void addBuilder(const std::string& Rd, std::string Rn1, std::string Rn2);
@@ -42,9 +42,11 @@ public:
         llvmirParser::TypeContext*                   type
     );
     void getCheck(std::string LocalId);
-    void callBuilder(llvmirParser::CallInstContext* context);
+    void callRegister(llvmirParser::CallInstContext* context, string local_ = "");
+    void callBuilder(llvmirParser::CallInstContext* context, string local_ = "");
     void bitcastBuilder(string Rd, string Rn);
     void memsetBuilder(string start_, int space_);
+    void zextBuilder(string rd_, string rn_);
 
 
     void icmpMapBuilder(const string& bool_, const string& flag_);
@@ -67,6 +69,7 @@ public:
 
 
     std::string         getRegister(const std::string Id);
+    void                swapRegister();
     void                removeRegister(const std::string& Id);
     std::string         getId(std::string basicString);
     std::string         makeSp(int offset);
