@@ -295,13 +295,19 @@ void ARMGen::ARMBuilder::sremBuilder(const std::string& Rd, std::string Rn1, std
     r2         = getRegister(std::move(Rn2));
     r1         = getRegister(std::move(Rn1));
     r0         = getRegister(Rd);
-    auto srem_ = std::make_shared<SremSen>(r0, r1, r2);
-    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(srem_);
+    auto sdiv_ = std::make_shared<SdivSen>("r10", r1, r2);
+    auto mul_  = std::make_shared<MulSen>("r10", "r10", r2);
+    auto sub_  = std::make_shared<SubSen>(r0, r1, "r10");
+
+    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(sdiv_);
+    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(mul_);
+    std::dynamic_pointer_cast<ARMGen::Function>(Tops.back())->addInst(sub_);
 }
 
 void ARMGen::ARMBuilder::icmpMapBuilder(const string& bool_, const string& flag_)
 {
     bool_flag.insert(std::make_pair(bool_, flag_));
+    std::cout << bool_ << " " << flag_ << NewLine;
 }
 
 void ARMGen::ARMBuilder::icmpBuilder(string& rn1, string& rn2)
@@ -408,7 +414,8 @@ void ARMGen::ARMBuilder::fnEnd()
     for (int i = 0; i < 10; i++) { Registers.insert("r" + std::to_string(i)); }
     for (auto& x : Reginum) { x.second = 0; }
 
-
+    bool_flag.clear();
+    rg_push.clear();
     Greater.clear();
     Id_Registers.clear();
     LocalId_Offset.clear();
@@ -442,7 +449,6 @@ void ARMGen::ARMBuilder::retBuilder(llvmirParser::RetTermContext* context)
         }
         auto pop_ = std::make_shared<PopSen>(ss.str());
         func_ptr->addInst(pop_);
-        rg_push.clear();
     }
 
 
@@ -613,10 +619,19 @@ void ARMGen::ARMBuilder::callBuilder(llvmirParser::CallInstContext* context, str
     if (context->args() != nullptr) {
         for (auto x : context->args()->arg()) {
             if (x->value()->getText()[0] != '%') {
-                auto mov_ = std::make_shared<MovSen>(
-                    "r" + std::to_string(num_), HASHTAG + x->value()->getText()
-                );
-                func->addInst(mov_);
+                int num = std::stoi(x->value()->getText());
+                if (num < 0) {
+                    num       = -1 - num;
+                    auto mvn_ = std::make_shared<MvnSen>(
+                        "r" + std::to_string(num_), HASHTAG + std::to_string(num)
+                    );
+                    func->addInst(mvn_);
+                } else {
+                    auto mov_ = std::make_shared<MovSen>(
+                        "r" + std::to_string(num_), HASHTAG + std::to_string(num)
+                    );
+                    func->addInst(mov_);
+                }
             }
             num_++;
         }
@@ -765,7 +780,7 @@ void ARMGen::ARMBuilder::makeMapGreatAgain()
 
     TimeToRelease.clear();
     for (auto& x : betterLocal) {
-        std::cout << x << NewLine;
+        //        std::cout << x << NewLine;
         if (LocalId_Offset.find(x) != LocalId_Offset.end()) {
             release(x);
             continue;
